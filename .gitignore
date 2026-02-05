@@ -1,0 +1,26 @@
+# Environment variables
+.env
+
+# OAuth tokens
+tokens/
+*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Logs
+*.log
