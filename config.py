@@ -19,6 +19,9 @@ class Config:
         """Initialize configuration with validation."""
         self.bot_token = self._get_bot_token()
         self.log_level = self._get_log_level()
+        self.webhook_url = self._get_webhook_url()
+        self.webhook_port = self._get_webhook_port()
+        self.webhook_path = self._get_webhook_path()
         self._setup_logging()
 
     def _get_bot_token(self) -> str:
@@ -66,6 +69,32 @@ class Config:
             level = 'INFO'
 
         return level
+
+    def _get_webhook_url(self) -> str:
+        """Get webhook URL from environment variables."""
+        url = os.getenv('WEBHOOK_URL', '')
+        if not url:
+            logging.warning("WEBHOOK_URL not set, webhook mode may not work")
+        return url.rstrip('/')
+
+    def _get_webhook_port(self) -> int:
+        """Get webhook port from environment variables."""
+        port = os.getenv('WEBHOOK_PORT', '8443')
+        try:
+            port_int = int(port)
+            # Telegram only allows specific ports
+            if port_int not in [80, 88, 443, 8443]:
+                logging.warning(f"Port {port_int} not in Telegram allowed ports (80, 88, 443, 8443), using 8443")
+                return 8443
+            return port_int
+        except ValueError:
+            logging.warning(f"Invalid port {port}, using default 8443")
+            return 8443
+
+    def _get_webhook_path(self) -> str:
+        """Get webhook path from environment variables."""
+        path = os.getenv('WEBHOOK_PATH', '/webhook')
+        return path if path.startswith('/') else f'/{path}'
 
     def _setup_logging(self):
         """Configure logging for the application."""

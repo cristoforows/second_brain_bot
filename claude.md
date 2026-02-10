@@ -30,7 +30,7 @@ This bot collects data from Telegram chats and dumps it into Google Drive for la
 
 ```
 Telegram Webhook → Bot (webhook receiver)
-    ↓
+    ↓                   
 Message Handler
     ├─→ Check if user authenticated with Google Drive
     │   ├─→ NO: Send authentication prompt

@@ -73,25 +73,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def echo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Echo the received message back to the user."""
     try:
-        user_message = update.message.text
-        user_id = update.effective_user.id
-        username = update.effective_user.username or "Unknown"
+        is_edited_message = update.edited_message is not None
+        message = update.edited_message if is_edited_message else update.message
+        if message is None:
+            return
 
-        # Log the received message
-        logger.info(f"Received message from {username} (ID: {user_id}): {user_message}")
+        user_message = message.text or ""
+        message_id = message.message_id  # user message_id from Telegram payload
+        chat_id = message.chat_id
 
-        # Echo the message back
-        await update.message.reply_text(user_message)
+        reply_message = f"{message_id}: {user_message}"
 
-        # Log successful echo
-        logger.debug(f"Echoed message back to {username}")
+        # Track mapping: original user message_id -> bot reply message_id (per-chat).
+        if is_edited_message:
+            # Instead of replying to the edited message, update the bot reply that corresponds
+            # to the message_id sent along with the edited_message payload.
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id + 1,
+                    text=reply_message,
+                )
+        else:
+            await message.reply_text(reply_message)
 
     except Exception as e:
         logger.error(f"Error echoing message: {e}")
         try:
-            await update.message.reply_text(
-                "Sorry, I couldn't echo your message. Please try again!"
-            )
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "Sorry, I couldn't echo your message. Please try again!"
+                )
         except Exception as reply_error:
             logger.error(f"Failed to send error message: {reply_error}")
 
@@ -123,7 +134,9 @@ def main() -> None:
         application.add_handler(CommandHandler("help", help_command))
 
         # Register message handler for text messages (echo functionality)
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_message))
+        text_filter = filters.TEXT & ~filters.COMMAND
+        application.add_handler(MessageHandler(filters.UpdateType.MESSAGE & text_filter, echo_message))
+        application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & text_filter, echo_message))
 
         # Register error handler
         application.add_error_handler(error_handler)
