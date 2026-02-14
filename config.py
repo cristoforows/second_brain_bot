@@ -22,6 +22,19 @@ class Config:
         self.webhook_url = self._get_webhook_url()
         self.webhook_port = self._get_webhook_port()
         self.webhook_path = self._get_webhook_path()
+
+        # Google OAuth configuration
+        self.google_client_id = self._get_google_client_id()
+        self.google_client_secret = self._get_google_client_secret()
+        self.google_redirect_uri = self._get_google_redirect_uri()
+
+        # Database configuration
+        self.database_url = self._get_database_params()
+        self.token_encryption_key = self._get_token_encryption_key()
+
+        # Google Drive settings
+        self.drive_folder_name = self._get_drive_folder_name()
+
         self._setup_logging()
 
     def _get_bot_token(self) -> str:
@@ -95,6 +108,49 @@ class Config:
         """Get webhook path from environment variables."""
         path = os.getenv('WEBHOOK_PATH', '/webhook')
         return path if path.startswith('/') else f'/{path}'
+
+    def _get_google_client_id(self) -> str:
+        """Get Google OAuth client ID."""
+        client_id = os.getenv('GOOGLE_CLIENT_ID')
+        if not client_id:
+            logging.error("GOOGLE_CLIENT_ID not found in .env")
+            sys.exit(1)
+        return client_id
+
+    def _get_google_client_secret(self) -> str:
+        """Get Google OAuth client secret."""
+        return os.getenv('GOOGLE_CLIENT_SECRET', '')
+
+    def _get_google_redirect_uri(self) -> str:
+        """Get OAuth redirect URI."""
+        return os.getenv('GOOGLE_REDIRECT_URI', f"{self.webhook_url}/oauth/callback")
+
+    def _get_database_params(self) -> dict[str, str]:
+        """Get PostgreSQL database URL (direct connection)."""
+        db_username = os.getenv('DATABASE_USER')
+        db_password = os.getenv('DATABASE_PASSWORD')
+        db_host = os.getenv('DATABASE_HOST')
+        db_port = os.getenv('DATABASE_PORT')
+        db_name = os.getenv('DATABASE_NAME')
+        return {
+            "username": db_username,
+            "password": db_password,
+            "host": db_host,
+            "port": db_port,
+            "database": db_name
+        }
+
+    def _get_token_encryption_key(self) -> str:
+        """Get token encryption key for Fernet."""
+        key = os.getenv('TOKEN_ENCRYPTION_KEY')
+        if not key:
+            logging.error("TOKEN_ENCRYPTION_KEY not found. Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"")
+            sys.exit(1)
+        return key
+
+    def _get_drive_folder_name(self) -> str:
+        """Get Drive markdown file name."""
+        return os.getenv('DRIVE_FOLDER_NAME', 'second_brain_bot/')
 
     def _setup_logging(self):
         """Configure logging for the application."""

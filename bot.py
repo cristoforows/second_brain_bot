@@ -1,110 +1,239 @@
 #!/usr/bin/env python3
 """
-Telegram Echo Bot - A simple bot that echoes messages back to users.
+Telegram Second Brain Bot - Collects messages and saves them to Google Drive.
 
-This bot demonstrates basic Telegram bot functionality using the python-telegram-bot library.
-It responds to /start and /help commands and echoes all other text messages.
+Authenticates users via Google OAuth 2.0 and stores their messages as markdown
+files in their personal Google Drive.
 """
 
 import logging
+from datetime import datetime, timezone
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
 from config import config
+from google_auth import generate_auth_url, TokenStorage
+import drive_handler
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 
+def _get_token_storage(context: ContextTypes.DEFAULT_TYPE) -> TokenStorage:
+    """Get the TokenStorage instance from bot_data."""
+    return context.bot_data.get('token_storage')
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command."""
-    welcome_message = (
-        "🤖 *Welcome to Echo Bot!*\n\n"
-        "I'm a simple bot that echoes everything you send me.\n\n"
-        "Try sending me any message and I'll send it right back!\n\n"
-        "Available commands:\n"
-        "• /start - Show this welcome message\n"
-        "• /help - Show help information\n\n"
-        "Just start typing to see me in action! 📝"
-    )
+    token_storage = _get_token_storage(context)
+    user_id = update.effective_user.id
+    is_authed = token_storage and token_storage.is_authenticated(user_id)
+
+    if is_authed:
+        welcome_message = (
+            "Welcome back to Second Brain Bot!\n\n"
+            "You are authenticated with Google Drive.\n"
+            "Send me any message and I'll save it to your Drive.\n\n"
+            "Commands:\n"
+            "/status - Check connection status\n"
+            "/logout - Disconnect Google Drive\n"
+            "/help - Show help"
+        )
+    else:
+        welcome_message = (
+            "Welcome to Second Brain Bot!\n\n"
+            "I save your Telegram messages to Google Drive as markdown files.\n\n"
+            "To get started, authenticate with Google Drive:\n"
+            "/authenticate - Connect your Google Drive\n\n"
+            "/help - Show help"
+        )
 
     try:
-        await update.message.reply_text(
-            welcome_message,
-            parse_mode='Markdown'
-        )
-        logger.info(f"Sent welcome message to user {update.effective_user.id}")
+        await update.message.reply_text(welcome_message)
+        logger.info(f"Sent welcome message to user {user_id}")
     except Exception as e:
         logger.error(f"Error sending welcome message: {e}")
-        await update.message.reply_text("Sorry, something went wrong! Please try again.")
+        await update.message.reply_text("Sorry, something went wrong. Please try again.")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /help command."""
     help_message = (
-        "ℹ️ *Echo Bot Help*\n\n"
-        "*What I do:*\n"
-        "I'm a simple echo bot that repeats everything you send me.\n\n"
-        "*How to use:*\n"
-        "1. Send me any text message\n"
-        "2. I'll send the exact same message back\n"
-        "3. That's it! Simple, right?\n\n"
-        "*Available commands:*\n"
-        "• /start - Show welcome message\n"
-        "• /help - Show this help message\n\n"
-        "*Examples:*\n"
-        "You: `Hello there!`\n"
-        "Me: `Hello there!`\n\n"
-        "You: `🎉 Party time!`\n"
-        "Me: `🎉 Party time!`\n\n"
-        "Have fun chatting with me! 💬"
+        "Second Brain Bot Help\n\n"
+        "What I do:\n"
+        "I save your Telegram messages to a markdown file in your Google Drive. "
+        "Edit a message here and it updates in Drive too.\n\n"
+        "Commands:\n"
+        "/authenticate - Connect your Google Drive\n"
+        "/status - Check connection status\n"
+        "/logout - Disconnect Google Drive\n"
+        "/help - Show this help message\n\n"
+        "How to use:\n"
+        "1. Use /authenticate to connect Google Drive\n"
+        "2. Send me any text message\n"
+        "3. It gets saved to your Drive as markdown\n"
+        "4. Edit a message and Drive updates automatically"
     )
 
     try:
-        await update.message.reply_text(
-            help_message,
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(help_message)
         logger.info(f"Sent help message to user {update.effective_user.id}")
     except Exception as e:
         logger.error(f"Error sending help message: {e}")
-        await update.message.reply_text("Sorry, something went wrong! Please try again.")
+        await update.message.reply_text("Sorry, something went wrong. Please try again.")
 
 
-async def echo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Echo the received message back to the user."""
+async def authenticate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /authenticate command - initiate OAuth flow."""
+    token_storage = _get_token_storage(context)
+    user_id = update.effective_user.id
+
+    if not token_storage:
+        await update.message.reply_text("Bot is not configured properly. Please contact the administrator.")
+        return
+
+    if token_storage.is_authenticated(user_id):
+        await update.message.reply_text(
+            "You are already authenticated with Google Drive.\n"
+            "Use /status to check your connection or /logout to disconnect."
+        )
+        return
+
     try:
-        is_edited_message = update.edited_message is not None
-        message = update.edited_message if is_edited_message else update.message
-        if message is None:
+        auth_url = generate_auth_url(
+            user_id=user_id,
+            client_id=config.google_client_id,
+            client_secret=config.google_client_secret,
+            redirect_uri=config.google_redirect_uri,
+        )
+        await update.message.reply_text(
+            "Authenticate with Google Drive\n\n"
+            f"Click the link below to authorize:\n{auth_url}\n\n"
+            "The link expires in 10 minutes."
+        )
+        logger.info(f"Sent OAuth URL to user {user_id}")
+    except Exception as e:
+        logger.error(f"Error generating auth URL for user {user_id}: {e}")
+        await update.message.reply_text("Failed to generate authentication link. Please try again.")
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /status command - show authentication and Drive status."""
+    token_storage = _get_token_storage(context)
+    user_id = update.effective_user.id
+
+    if not token_storage or not token_storage.is_authenticated(user_id):
+        await update.message.reply_text(
+            "Not Authenticated\n\n"
+            "Use /authenticate to connect your Google Drive."
+        )
+        return
+
+    token_data = token_storage.get_user_token(user_id)
+    expiry_info = "Unknown"
+    if token_data and token_data.get('expiry'):
+        try:
+            expiry = datetime.fromisoformat(token_data['expiry'])
+            remaining = expiry - datetime.now(timezone.utc).replace(tzinfo=None)
+            hours = int(remaining.total_seconds() // 3600)
+            if hours > 0:
+                expiry_info = f"{hours} hours"
+            else:
+                expiry_info = "Token will auto-refresh"
+        except (ValueError, TypeError):
+            pass
+
+    await update.message.reply_text(
+        "Authentication Status\n\n"
+        f"Google Drive: Connected\n"
+        f"Token expires in: {expiry_info}\n"
+        f"Markdown file: {config.drive_folder_name}\n\n"
+        "Send any message to save to Drive!"
+    )
+
+
+async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /logout command - remove stored tokens."""
+    token_storage = _get_token_storage(context)
+    user_id = update.effective_user.id
+
+    if not token_storage or not token_storage.is_authenticated(user_id):
+        await update.message.reply_text("You are not currently authenticated.")
+        return
+
+    try:
+        token_storage.delete_user_token(user_id)
+        await update.message.reply_text(
+            "Logged out successfully.\n\n"
+            "Your authentication has been removed.\n"
+            "Use /authenticate to connect again."
+        )
+        logger.info(f"User {user_id} logged out")
+    except Exception as e:
+        logger.error(f"Error during logout for user {user_id}: {e}")
+        await update.message.reply_text("Failed to log out. Please try again.")
+
+
+async def store_message_on_drive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Save the received message to Google Drive (or handle edits)."""
+    token_storage = _get_token_storage(context)
+    is_edited = update.edited_message is not None
+    message = update.edited_message if is_edited else update.message
+    if message is None:
+        return
+
+    user_id = update.effective_user.id
+
+    # Authentication gate
+    if not token_storage or not token_storage.is_authenticated(user_id):
+        await message.reply_text(
+            "Please authenticate with Google Drive first using /authenticate"
+        )
+        return
+
+    user_message = message.text or ""
+    message_id = message.message_id
+    username = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
+    timestamp = message.date or datetime.now(timezone.utc)
+
+    try:
+        service = drive_handler.get_drive_service(user_id, token_storage)
+        if not service:
+            await message.reply_text(
+                "Google Drive authentication expired. Please use /authenticate to reconnect."
+            )
+            return
+        folder_id = drive_handler.get_or_create_folder(service, config.drive_folder_name)
+        if not folder_id:
+            message.reply_text("Failed to locate folder in Drive. Please try again.")
+            return
+        file_id = drive_handler.get_or_create_markdown_file(service, folder_id)
+        if not file_id:
+            await message.reply_text("Failed to access Drive file. Please try again.")
             return
 
-        user_message = message.text or ""
-        message_id = message.message_id  # user message_id from Telegram payload
-        chat_id = message.chat_id
-
-        reply_message = f"{message_id}: {user_message}"
-
-        # Track mapping: original user message_id -> bot reply message_id (per-chat).
-        if is_edited_message:
-            # Instead of replying to the edited message, update the bot reply that corresponds
-            # to the message_id sent along with the edited_message payload.
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id + 1,
-                    text=reply_message,
-                )
+        if is_edited:
+            success = drive_handler.update_message(service, file_id, message_id, user_message, timestamp)
+            if success:
+                logger.info(f"Message {message_id} updated in Drive for user {user_id}")
+            else:
+                # Message not found for edit - append as new instead
+                success = drive_handler.append_message(service, file_id, message_id, user_message, timestamp, username)
+                if success:
+                    logger.info(f"Edited message {message_id} appended as new for user {user_id}")
         else:
-            await message.reply_text(reply_message)
+            success = drive_handler.append_message(service, file_id, message_id, user_message, timestamp, username)
+            if success:
+                logger.info(f"Message {message_id} saved to Drive for user {user_id}")
+
+        if not success:
+            await message.reply_text("Failed to save message to Drive. Please try again.")
 
     except Exception as e:
-        logger.error(f"Error echoing message: {e}")
-        try:
-            if update.effective_message:
-                await update.effective_message.reply_text(
-                    "Sorry, I couldn't echo your message. Please try again!"
-                )
-        except Exception as reply_error:
-            logger.error(f"Failed to send error message: {reply_error}")
+        logger.error(f"Error saving message for user {user_id}: {e}")
+        await message.reply_text("Something went wrong saving to Drive. Please try again.")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -135,8 +264,8 @@ def main() -> None:
 
         # Register message handler for text messages (echo functionality)
         text_filter = filters.TEXT & ~filters.COMMAND
-        application.add_handler(MessageHandler(filters.UpdateType.MESSAGE & text_filter, echo_message))
-        application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & text_filter, echo_message))
+        application.add_handler(MessageHandler(filters.UpdateType.MESSAGE & text_filter, store_message_on_drive))
+        application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & text_filter, store_message_on_drive))
 
         # Register error handler
         application.add_error_handler(error_handler)
