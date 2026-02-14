@@ -1,0 +1,22 @@
+# Optional: PersistentVolumeClaim for token storage
+# Only needed if NOT using database for token storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: telegram-bot-tokens-pvc
+  namespace: telegram-bot
+  labels:
+    app: second-brain-bot
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard  # Change based on your cluster's storage classes
+
+  # Optional: Selector for specific PV
+  # selector:
+  #   matchLabels:
+  #     app: second-brain-bot
+  #     type: tokens

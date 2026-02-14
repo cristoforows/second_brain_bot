@@ -1,0 +1,66 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: telegram-bot-ingress
+  namespace: telegram-bot
+  annotations:
+    # Nginx Ingress Controller annotations
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+
+    # Rate limiting (adjust as needed)
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+
+    # CORS (if needed for OAuth callback)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+
+    # Certificate manager annotation (if using cert-manager)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+    # AWS ALB annotations (alternative to nginx)
+    # kubernetes.io/ingress.class: alb
+    # alb.ingress.kubernetes.io/scheme: internet-facing
+    # alb.ingress.kubernetes.io/target-type: ip
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:region:account:certificate/id
+    # alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS-1-2-2017-01
+    # alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    # alb.ingress.kubernetes.io/ssl-redirect: '443'
+spec:
+  ingressClassName: nginx  # or 'alb' for AWS
+
+  tls:
+  - hosts:
+    - your-domain.com
+    secretName: telegram-bot-tls-cert  # cert-manager will create this
+
+  rules:
+  - host: your-domain.com
+    http:
+      paths:
+      # Webhook endpoint
+      - path: /webhook
+        pathType: Prefix
+        backend:
+          service:
+            name: telegram-bot-service
+            port:
+              number: 8443
+
+      # OAuth callback endpoint
+      - path: /oauth
+        pathType: Prefix
+        backend:
+          service:
+            name: telegram-bot-service
+            port:
+              number: 8443
+
+      # Health check endpoint
+      - path: /
+        pathType: Exact
+        backend:
+          service:
+            name: telegram-bot-service
+            port:
+              number: 8443

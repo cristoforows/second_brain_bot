@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: telegram-bot
+
+# Common labels applied to all resources
+commonLabels:
+  app: second-brain-bot
+  managed-by: kustomize
+
+# Resources to deploy
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  - hpa.yaml
+  # - pvc.yaml  # Uncomment if using persistent storage for tokens
+
+# Images (can be overridden via overlays)
+images:
+  - name: your-registry/second-brain-bot
+    newName: your-registry/second-brain-bot
+    newTag: latest
+
+# ConfigMap generator (alternative to configmap.yaml)
+# configMapGenerator:
+#   - name: telegram-bot-config
+#     literals:
+#       - LOG_LEVEL=INFO
+#       - WEBHOOK_PORT=8443
+
+# Secret generator (DO NOT commit secrets, use sealed-secrets or external-secrets instead)
+# secretGenerator:
+#   - name: telegram-bot-secrets
+#     literals:
+#       - TELEGRAM_BOT_TOKEN=changeme
+
+# Overlays for different environments
+# Run with: kubectl apply -k k8s/overlays/production

@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: second-brain-bot
+    restart: unless-stopped
+
+    # Port mapping
+    ports:
+      - "8443:8443"
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Or specify environment variables directly
+    # environment:
+    #   - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    #   - WEBHOOK_URL=${WEBHOOK_URL}
+    #   - WEBHOOK_PORT=8443
+    #   - LOG_LEVEL=INFO
+    #   - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+    #   - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+    #   - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
+    #   - DATABASE_USER=${DATABASE_USER}
+    #   - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+    #   - DATABASE_HOST=${DATABASE_HOST}
+    #   - DATABASE_PORT=${DATABASE_PORT}
+    #   - DATABASE_NAME=${DATABASE_NAME}
+    #   - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+    #   - DRIVE_FOLDER_NAME=${DRIVE_FOLDER_NAME}
+
+    # Volume for persistent token storage (optional if using database)
+    volumes:
+      - ./tokens:/app/tokens
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8443/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Network mode (optional)
+    # network_mode: "bridge"
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+    # Read-only root filesystem (optional, may need adjustments)
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
+
+# Optional: Add database service if not using external database
+# services:
+#   postgres:
+#     image: postgres:15-alpine
+#     container_name: second-brain-db
+#     restart: unless-stopped
+#     environment:
+#       POSTGRES_DB: second_brain
+#       POSTGRES_USER: botuser
+#       POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+#     volumes:
+#       - postgres-data:/var/lib/postgresql/data
+#     ports:
+#       - "5432:5432"
+#     healthcheck:
+#       test: ["CMD-SHELL", "pg_isready -U botuser"]
+#       interval: 10s
+#       timeout: 5s
+#       retries: 5
+#
+# volumes:
+#   postgres-data:

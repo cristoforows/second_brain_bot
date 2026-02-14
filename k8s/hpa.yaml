@@ -1,0 +1,32 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: telegram-bot-hpa
+  namespace: telegram-bot
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: telegram-bot
+  minReplicas: 1
+  maxReplicas: 1  # Keep at 1 for Telegram webhooks (single endpoint)
+
+  # Note: Telegram webhooks are designed to work with a single endpoint
+  # If you need to scale, consider:
+  # 1. Using polling mode instead of webhooks
+  # 2. Implementing a message queue architecture
+  # 3. Using multiple bots with different tokens
+
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

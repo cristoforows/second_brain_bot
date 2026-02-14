@@ -24,3 +24,11 @@ venv/
 
 # Logs
 *.log
+
+# Kubernetes secrets (if not using sealed-secrets)
+# IMPORTANT: Never commit k8s/secret.yaml with real values
+# k8s/secret.yaml
+# Use sealed-secrets or external secret managers instead
+
+# Docker volumes
+docker-compose.override.yml

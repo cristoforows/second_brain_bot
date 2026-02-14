@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telegram-bot-config
+  namespace: telegram-bot
+data:
+  # Logging
+  LOG_LEVEL: "INFO"
+
+  # Webhook Configuration
+  WEBHOOK_PORT: "8443"
+  WEBHOOK_PATH: "/webhook"
+  WEBHOOK_URL: "https://your-domain.com"
+
+  # Google Drive Settings
+  DRIVE_FOLDER_NAME: "second_brain_inbox.md"
+
+  # Application Settings
+  APP_NAME: "second-brain-bot"
+  ENVIRONMENT: "production"

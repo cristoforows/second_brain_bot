@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: telegram-bot
+  labels:
+    app: second-brain-bot
+    environment: production

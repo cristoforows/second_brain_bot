@@ -1,0 +1,179 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telegram-bot
+  namespace: telegram-bot
+  labels:
+    app: second-brain-bot
+    version: v1
+spec:
+  replicas: 1  # Telegram webhooks work best with single instance
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: second-brain-bot
+  template:
+    metadata:
+      labels:
+        app: second-brain-bot
+        version: v1
+      annotations:
+        prometheus.io/scrape: "false"  # Enable if you add metrics
+    spec:
+      # Security context for pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+      - name: bot
+        image: your-registry/second-brain-bot:latest  # Replace with your image
+        imagePullPolicy: Always
+
+        ports:
+        - name: webhook
+          containerPort: 8443
+          protocol: TCP
+
+        # Environment variables from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: telegram-bot-config
+
+        # Environment variables from Secret
+        env:
+        - name: TELEGRAM_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: TELEGRAM_BOT_TOKEN
+        - name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: GOOGLE_CLIENT_ID
+        - name: GOOGLE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: GOOGLE_CLIENT_SECRET
+        - name: GOOGLE_REDIRECT_URI
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: GOOGLE_REDIRECT_URI
+        - name: DATABASE_USER
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: DATABASE_USER
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: DATABASE_PASSWORD
+        - name: DATABASE_HOST
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: DATABASE_HOST
+        - name: DATABASE_PORT
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: DATABASE_PORT
+        - name: DATABASE_NAME
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: DATABASE_NAME
+        - name: TOKEN_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: telegram-bot-secrets
+              key: TOKEN_ENCRYPTION_KEY
+
+        # Resource limits and requests
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /
+            port: webhook
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /
+            port: webhook
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Security context for container
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Set to true if you don't need to write to filesystem
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+
+        # Volume mounts (if needed for token storage)
+        # volumeMounts:
+        # - name: tokens
+        #   mountPath: /app/tokens
+
+      # Volumes (if using persistent storage for tokens)
+      # volumes:
+      # - name: tokens
+      #   persistentVolumeClaim:
+      #     claimName: telegram-bot-tokens-pvc
+
+      # Image pull secrets (if using private registry)
+      # imagePullSecrets:
+      # - name: registry-credentials
+
+      # Node selector (optional)
+      # nodeSelector:
+      #   kubernetes.io/os: linux
+
+      # Tolerations (optional)
+      # tolerations:
+      # - key: "key1"
+      #   operator: "Equal"
+      #   value: "value1"
+      #   effect: "NoSchedule"
+
+      # Affinity rules (optional)
+      # affinity:
+      #   podAntiAffinity:
+      #     preferredDuringSchedulingIgnoredDuringExecution:
+      #     - weight: 100
+      #       podAffinityTerm:
+      #         labelSelector:
+      #           matchExpressions:
+      #           - key: app
+      #             operator: In
+      #             values:
+      #             - second-brain-bot
+      #         topologyKey: kubernetes.io/hostname
