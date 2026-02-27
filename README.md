@@ -60,9 +60,8 @@ LOG_LEVEL=INFO
 
 ### 4. Run the Bot
 
-```bash
-python bot.py
-```
+go to [DEVELOPMENT.md](DEVELOPMENT.md) for local development testing.
+go to [DEPLOY.md](DEPLOY.md) for remote deployment.
 
 ## Usage
 
