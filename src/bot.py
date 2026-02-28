@@ -202,16 +202,23 @@ async def store_message_on_drive(update: Update, context: ContextTypes.DEFAULT_T
         service = drive_handler.get_drive_service(user_id, token_storage)
         if not service:
             await message.reply_text(
-                "Google Drive authentication expired. Please use /authenticate to reconnect."
+                "Your Google Drive session has expired and could not be refreshed. "
+                "Your message was not saved. Please use /logout then /authenticate to reconnect."
             )
             return
         folder_id = drive_handler.get_or_create_folder(service, config.drive_folder_name)
         if not folder_id:
-            message.reply_text("Failed to locate folder in Drive. Please try again.")
+            await message.reply_text(
+                "Could not find or create the folder in Google Drive. "
+                "Your message was not saved. Please try again later."
+            )
             return
         file_id = drive_handler.get_or_create_markdown_file(service, folder_id)
         if not file_id:
-            await message.reply_text("Failed to access Drive file. Please try again.")
+            await message.reply_text(
+                "Could not find or create the markdown file in Google Drive. "
+                "Your message was not saved. Please try again later."
+            )
             return
 
         if is_edited:
@@ -229,11 +236,23 @@ async def store_message_on_drive(update: Update, context: ContextTypes.DEFAULT_T
                 logger.info(f"Message {message_id} saved to Drive for user {user_id}")
 
         if not success:
-            await message.reply_text("Failed to save message to Drive. Please try again.")
+            if is_edited:
+                await message.reply_text(
+                    "Failed to update your edited message in Google Drive. "
+                    "The change was not saved. Please try again."
+                )
+            else:
+                await message.reply_text(
+                    "Failed to save your message to Google Drive. "
+                    "Your message was not saved. Please try again."
+                )
 
     except Exception as e:
         logger.error(f"Error saving message for user {user_id}: {e}")
-        await message.reply_text("Something went wrong saving to Drive. Please try again.")
+        await message.reply_text(
+            "An unexpected error occurred while saving to Google Drive. "
+            "Your message was not saved. Please try again later."
+        )
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

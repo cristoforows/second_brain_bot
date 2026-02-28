@@ -31,7 +31,6 @@ class TokenStorage:
 
     def __init__(self, database_url: dict, encryption_key: str):
         """Initialize token storage with direct PostgreSQL connection pooling."""
-        logger.warning(f"Database URL: {database_url}")
         self.connection_pool = psycopg2.pool.SimpleConnectionPool(1, 10,
             user=database_url['username'],
             password=database_url['password'],
@@ -241,7 +240,7 @@ def get_credentials(user_id: int, token_storage: TokenStorage) -> Credentials | 
         scopes=token_data.get('scopes', SCOPES),
     )
 
-    if credentials.expiry:
+    if not credentials.expiry:
         credentials.expiry = datetime.fromisoformat(token_data['expiry'])
 
     if credentials.expired and credentials.refresh_token:
