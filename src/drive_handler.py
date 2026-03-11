@@ -80,7 +80,6 @@ def get_or_create_markdown_file(service, folder_id: str) -> str | None:
             file_id = files[0]['id']
             logger.info(f"Found existing file: {file_name} (ID: {file_id})")
             return file_id
-        
 
         # Create new file
         file_metadata = {
@@ -118,13 +117,13 @@ def append_message(
     """Append a new message to the markdown file in Drive."""
     try:
         # Download current file content
-        logger.warning(f"Downloading file content for file {file_id}")
+        logger.info(f"Downloading file content for file {file_id}")
         current_content = _download_file_content(service, file_id)
         if current_content is None:
             return False
 
         # Format the new message block
-        message_block = _format_message_block(message_id, content, timestamp, username)
+        message_block = _format_message_block(message_id, content)
 
         # Append to content
         updated_content = current_content + message_block
@@ -165,11 +164,8 @@ def update_message(
         return False
 
 
-def _format_message_block(
-    message_id: int, content: str, timestamp: datetime, username: str
-) -> str:
+def _format_message_block(message_id: int, content: str) -> str:
     """Format a message as a comment-style markdown block."""
-    date_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
     return f"<!-- msg_id: {message_id} -->\n{content}\n"
 
 

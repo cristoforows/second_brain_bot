@@ -271,7 +271,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main() -> None:
     """Main function to start the bot."""
-    logger.info("Starting Telegram Echo Bot...")
+    logger.info("Starting Second Brain Bot...")
 
     try:
         # Create the Application
@@ -280,8 +280,11 @@ def main() -> None:
         # Register command handlers
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("authenticate", authenticate_command))
+        application.add_handler(CommandHandler("status", status_command))
+        application.add_handler(CommandHandler("logout", logout_command))
 
-        # Register message handler for text messages (echo functionality)
+        # Register message handler to save messages to Google Drive
         text_filter = filters.TEXT & ~filters.COMMAND
         application.add_handler(MessageHandler(filters.UpdateType.MESSAGE & text_filter, store_message_on_drive))
         application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & text_filter, store_message_on_drive))

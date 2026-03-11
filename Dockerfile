@@ -28,11 +28,11 @@ RUN useradd -m -u 1000 botuser && \
 COPY --from=builder /root/.local /home/botuser/.local
 
 # Copy application code
-COPY --chown=botuser:botuser bot.py .
-COPY --chown=botuser:botuser webhook_server.py .
-COPY --chown=botuser:botuser config.py .
-COPY --chown=botuser:botuser google_auth.py .
-COPY --chown=botuser:botuser drive_handler.py .
+COPY --chown=botuser:botuser src/bot.py .
+COPY --chown=botuser:botuser src/webhook_server.py .
+COPY --chown=botuser:botuser src/config.py .
+COPY --chown=botuser:botuser src/google_auth.py .
+COPY --chown=botuser:botuser src/drive_handler.py .
 
 # Switch to non-root user
 USER botuser

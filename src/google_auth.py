@@ -165,16 +165,16 @@ def generate_auth_url(user_id: int, client_id: str, client_secret: str, redirect
         redirect_uri=redirect_uri,
     )
 
-    state = _generate_state(user_id)
-
-    authorization_url, _ = flow.authorization_url(
+    authorization_url, state = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
         prompt='consent',
-        state=state,
     )
 
+    _store_state(state, user_id, flow.code_verifier)
+
     logger.info(f"Generated OAuth URL for user {user_id}")
+
     return authorization_url
 
 
@@ -190,10 +190,13 @@ def handle_oauth_callback(
 
     Returns the user_id on success, None on failure.
     """
-    user_id = _validate_state(state)
-    if user_id is None:
+    state_data = _validate_state(state)
+    if state_data is None:
         logger.warning("OAuth callback with invalid or expired state")
         return None
+
+    user_id = state_data["user_id"]
+    code_verifier = state_data.get("code_verifier")
 
     flow = Flow.from_client_config(
         {
@@ -207,6 +210,9 @@ def handle_oauth_callback(
         scopes=SCOPES,
         redirect_uri=redirect_uri,
     )
+
+    if code_verifier:
+        flow.code_verifier = code_verifier
 
     try:
         flow.fetch_token(code=code)
@@ -231,6 +237,9 @@ def get_credentials(user_id: int, token_storage: TokenStorage) -> Credentials | 
     if not token_data:
         return None
 
+    expiry_str = token_data.get('expiry')
+    expiry = datetime.fromisoformat(expiry_str) if expiry_str else None
+
     credentials = Credentials(
         token=token_data['token'],
         refresh_token=token_data.get('refresh_token'),
@@ -238,10 +247,8 @@ def get_credentials(user_id: int, token_storage: TokenStorage) -> Credentials | 
         client_id=token_data.get('client_id'),
         client_secret=token_data.get('client_secret'),
         scopes=token_data.get('scopes', SCOPES),
+        expiry=expiry,
     )
-
-    if not credentials.expiry:
-        credentials.expiry = datetime.fromisoformat(token_data['expiry'])
 
     if credentials.expired and credentials.refresh_token:
         try:
@@ -258,16 +265,17 @@ def get_credentials(user_id: int, token_storage: TokenStorage) -> Credentials | 
 
 # --- State management (CSRF protection) ---
 
-def _generate_state(user_id: int) -> str:
-    """Generate a state parameter with user_id and random nonce."""
-    nonce = secrets.token_urlsafe(16)
-    state = f"{user_id}:{nonce}"
-    _state_cache[state] = {"user_id": user_id, "expires": time.time() + 600}
-    return state
+def _store_state(state: str, user_id: int, code_verifier: str | None) -> None:
+    """Store state with user_id and code_verifier for CSRF protection."""
+    _state_cache[state] = {
+        "user_id": user_id,
+        "code_verifier": code_verifier,
+        "expires": time.time() + 600,
+    }
 
 
-def _validate_state(state: str) -> int | None:
-    """Validate state and return user_id. One-time use."""
+def _validate_state(state: str) -> dict | None:
+    """Validate state and return data dict. One-time use."""
     if state not in _state_cache:
         return None
 
@@ -276,4 +284,4 @@ def _validate_state(state: str) -> int | None:
     if time.time() > data["expires"]:
         return None
 
-    return data["user_id"]
+    return data

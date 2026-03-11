@@ -21,6 +21,7 @@ venv/
 
 # OS
 .DS_Store
+*.pkg
 
 # Logs
 *.log

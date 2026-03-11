@@ -77,16 +77,22 @@ Once authenticated, send any text message and it gets saved to a daily markdown 
 
 ```
 second_brain_bot/
-├── bot.py              # Bot handlers and commands
-├── webhook_server.py   # Flask webhook server + OAuth callback endpoint
-├── config.py           # Configuration and environment management
-├── google_auth.py      # OAuth 2.0 flow, token storage, CSRF protection
-├── drive_handler.py    # Google Drive API: file creation, message append/edit
-├── requirements.txt    # Python dependencies
-├── .env               # Your credentials (create from .env.example)
-├── .env.example       # Template for configuration
-├── README.md          # This file (user guide)
-└── CLAUDE.md          # Technical documentation for AI agents
+├── src/
+│   ├── bot.py              # Command handlers (/start, /help, /authenticate, /status, /logout)
+│   ├── webhook_server.py   # Flask server: webhook receiver + OAuth callback endpoint
+│   ├── config.py           # Configuration and environment management
+│   ├── google_auth.py      # OAuth 2.0 flow, token storage (PostgreSQL), CSRF protection
+│   └── drive_handler.py    # Google Drive API: file creation, message append/edit
+├── k8s/                    # Kubernetes manifests
+├── Dockerfile              # Multi-stage Docker build
+├── docker-compose.yml      # Docker Compose deployment
+├── requirements.txt        # Python dependencies
+├── .env                   # Your credentials (create from .env.example)
+├── .env.example           # Template for configuration
+├── README.md              # This file (user guide)
+├── DEVELOPMENT.md         # Local development guide
+├── DEPLOY.md              # Docker/Kubernetes deployment guide
+└── CLAUDE.md              # Technical documentation for AI agents
 ```
 
 ## Configuration
@@ -94,7 +100,16 @@ second_brain_bot/
 ### Environment Variables
 
 - `TELEGRAM_BOT_TOKEN` (required) - Your bot token from @BotFather
-- `LOG_LEVEL` (optional) - Set logging verbosity: DEBUG, INFO, WARNING, ERROR, CRITICAL
+- `WEBHOOK_URL` (required) - Public HTTPS base URL (e.g. `https://your-domain.com`)
+- `WEBHOOK_PORT` (optional, default `8443`) - Port for webhook server (80, 88, 443, or 8443)
+- `WEBHOOK_PATH` (optional, default `/webhook`) - Path prefix for the webhook endpoint
+- `GOOGLE_CLIENT_ID` (required) - OAuth client ID from Google Cloud Console
+- `GOOGLE_CLIENT_SECRET` (required) - OAuth client secret
+- `GOOGLE_REDIRECT_URI` (optional) - OAuth callback URL (defaults to `{WEBHOOK_URL}/oauth/callback`)
+- `DATABASE_USER` / `DATABASE_PASSWORD` / `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_NAME` (required) - PostgreSQL connection details
+- `TOKEN_ENCRYPTION_KEY` (required) - Fernet key for encrypting stored OAuth tokens
+- `DRIVE_FOLDER_NAME` (optional, default `second_brain_inbox.md`) - Markdown filename in user's Drive
+- `LOG_LEVEL` (optional, default `INFO`) - Logging verbosity: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 ### Google OAuth & Drive Setup
 
@@ -107,7 +122,16 @@ second_brain_bot/
 ### Database Setup (Supabase)
 
 1. Create a project at [Supabase](https://supabase.com)
-2. Run the `CREATE TABLE user_tokens` migration from `authentication_plan.md`
+2. Run this migration in the SQL Editor:
+   ```sql
+   CREATE TABLE user_tokens (
+       user_id BIGINT PRIMARY KEY,
+       encrypted_token TEXT NOT NULL,
+       token_expires_at TIMESTAMP,
+       last_accessed TIMESTAMP NOT NULL,
+       created_at TIMESTAMP NOT NULL DEFAULT NOW()
+   );
+   ```
 3. Copy the database connection details to your `.env`
 
 ### Token Encryption

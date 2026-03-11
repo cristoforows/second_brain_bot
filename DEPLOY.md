@@ -31,8 +31,10 @@ Before deployment, gather the following:
 2. **Google OAuth Credentials**: From [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
    - Client ID
    - Client Secret
-   - Redirect URI
-3. **Database Credentials**: PostgreSQL connection details
+   - Redirect URI (must be `https://your-domain.com/oauth/callback`)
+3. **PostgreSQL Database**: Supabase project or any PostgreSQL instance
+   - Host, port, database name, user, password
+   - Run the `user_tokens` table migration (see [Database Setup](#database-setup))
 4. **Domain Name**: For webhook and OAuth callbacks (must be HTTPS)
 5. **SSL Certificate**: Let's Encrypt or commercial certificate
 
@@ -71,6 +73,7 @@ Required environment variables:
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
 WEBHOOK_URL=https://your-domain.com
 WEBHOOK_PORT=8443
+WEBHOOK_PATH=/webhook
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your-client-secret
 GOOGLE_REDIRECT_URI=https://your-domain.com/oauth/callback
@@ -80,6 +83,7 @@ DATABASE_HOST=your-db-host
 DATABASE_PORT=5432
 DATABASE_NAME=second_brain
 TOKEN_ENCRYPTION_KEY=your-generated-fernet-key
+DRIVE_FOLDER_NAME=second_brain_inbox.md
 ```
 
 #### Step 3: Build and Run
@@ -233,6 +237,8 @@ kubectl apply -f k8s/sealed-secret.yaml
 ```bash
 nano k8s/configmap.yaml
 # Update WEBHOOK_URL to your domain
+# Update WEBHOOK_PATH if needed (default: /webhook)
+# Update DRIVE_FOLDER_NAME if needed (default: second_brain_inbox.md)
 ```
 
 #### Update Deployment (`k8s/deployment.yaml`)
@@ -486,51 +492,46 @@ docker push registry.digitalocean.com/myregistry/second-brain-bot:latest
 
 ## Configuration
 
-### SSL/TLS Certificates
+### Environment Variables Reference
 
-#### Option 1: Let's Encrypt (cert-manager)
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Yes | — | Bot token from @BotFather |
+| `WEBHOOK_URL` | Yes | — | Public HTTPS base URL (e.g. `https://your-domain.com`) |
+| `WEBHOOK_PORT` | No | `8443` | Port for webhook server (80, 88, 443, or 8443) |
+| `WEBHOOK_PATH` | No | `/webhook` | Path prefix for webhook endpoint |
+| `GOOGLE_CLIENT_ID` | Yes | — | OAuth client ID from Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | Yes | — | OAuth client secret |
+| `GOOGLE_REDIRECT_URI` | No | `{WEBHOOK_URL}/oauth/callback` | OAuth callback URL |
+| `DATABASE_USER` | Yes | — | PostgreSQL username |
+| `DATABASE_PASSWORD` | Yes | — | PostgreSQL password |
+| `DATABASE_HOST` | Yes | — | PostgreSQL host |
+| `DATABASE_PORT` | Yes | — | PostgreSQL port |
+| `DATABASE_NAME` | Yes | — | PostgreSQL database name |
+| `TOKEN_ENCRYPTION_KEY` | Yes | — | Fernet key for encrypting stored OAuth tokens |
+| `DRIVE_FOLDER_NAME` | No | `second_brain_inbox.md` | Markdown filename in user's Google Drive |
+| `LOG_LEVEL` | No | `INFO` | Logging verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
 
-```bash
-# Install cert-manager
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.yaml
-
-# Create ClusterIssuer
-cat <<EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: your-email@example.com
-    privateKeySecretRef:
-      name: letsencrypt-prod
-    solvers:
-    - http01:
-        ingress:
-          class: nginx
-EOF
-
-# Ingress will automatically request certificate
-```
-
-#### Option 2: Manual Certificate
-
-```bash
-# Create TLS secret from certificate files
-kubectl create secret tls telegram-bot-tls-cert \
-  --namespace=telegram-bot \
-  --cert=path/to/cert.crt \
-  --key=path/to/cert.key
-```
+The Telegram webhook is registered at: `{WEBHOOK_URL}{WEBHOOK_PATH}/{BOT_TOKEN}`
+The OAuth callback is served at: `{WEBHOOK_URL}/oauth/callback`
 
 ### Database Setup
 
-#### PostgreSQL on Kubernetes
+The bot stores OAuth tokens in PostgreSQL (Supabase is recommended). Create the required table before first run:
+
+```sql
+CREATE TABLE user_tokens (
+    user_id BIGINT PRIMARY KEY,
+    encrypted_token TEXT NOT NULL,
+    token_expires_at TIMESTAMP,
+    last_accessed TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+```
+
+#### PostgreSQL on Kubernetes (self-hosted option)
 
 ```bash
-# Create PostgreSQL deployment
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -593,6 +594,45 @@ spec:
   ports:
   - port: 5432
 EOF
+```
+
+### SSL/TLS Certificates
+
+#### Option 1: Let's Encrypt (cert-manager)
+
+```bash
+# Install cert-manager
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.yaml
+
+# Create ClusterIssuer
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: your-email@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+EOF
+
+# Ingress will automatically request certificate
+```
+
+#### Option 2: Manual Certificate
+
+```bash
+# Create TLS secret from certificate files
+kubectl create secret tls telegram-bot-tls-cert \
+  --namespace=telegram-bot \
+  --cert=path/to/cert.crt \
+  --key=path/to/cert.key
 ```
 
 ### Environment-Specific Configuration
@@ -686,7 +726,8 @@ kubectl describe pod <pod-name> -n telegram-bot
 #### Database Backup
 
 ```bash
-# PostgreSQL backup
+# PostgreSQL backup (Supabase has built-in backups)
+# For self-hosted:
 kubectl exec -n telegram-bot postgres-pod -- \
   pg_dump -U botuser second_brain > backup.sql
 
@@ -755,7 +796,7 @@ kubectl get endpoints -n telegram-bot
 #### 3. Database Connection Issues
 
 ```bash
-# Check database pod
+# Check database pod (if self-hosted)
 kubectl get pods -n telegram-bot | grep postgres
 
 # Test connection from bot pod
@@ -763,7 +804,18 @@ kubectl exec -it <bot-pod> -n telegram-bot -- \
   python -c "import psycopg2; conn = psycopg2.connect('dbname=second_brain user=botuser host=postgres password=<pass>'); print('Connected')"
 ```
 
-#### 4. SSL/TLS Certificate Issues
+#### 4. OAuth Callback Failing
+
+```bash
+# Ensure GOOGLE_REDIRECT_URI matches exactly what's configured in Google Cloud Console
+# Check that /oauth/callback path is accessible (not blocked by ingress rules)
+curl https://your-domain.com/oauth/callback
+
+# Check logs for CSRF state errors (state cache is in-memory; pod restart during auth flow will fail)
+kubectl logs -f deployment/telegram-bot -n telegram-bot | grep "state"
+```
+
+#### 5. SSL/TLS Certificate Issues
 
 ```bash
 # Check certificate
@@ -776,7 +828,7 @@ kubectl logs -n cert-manager deployment/cert-manager
 kubectl describe certificate telegram-bot-tls-cert -n telegram-bot
 ```
 
-#### 5. Image Pull Errors
+#### 6. Image Pull Errors
 
 ```bash
 # Check image pull secret
@@ -841,6 +893,7 @@ kubectl edit deployment telegram-bot -n telegram-bot
 8. **Audit logs**: Enable Kubernetes audit logging
 9. **Backup regularly**: Automate database backups
 10. **Monitor**: Set up alerts for errors and anomalies
+11. **Rotate keys**: Periodically rotate `TOKEN_ENCRYPTION_KEY` and OAuth credentials
 
 ---
 
@@ -848,14 +901,17 @@ kubectl edit deployment telegram-bot -n telegram-bot
 
 - [ ] SSL/TLS certificates configured
 - [ ] Secrets stored securely (not in Git)
+- [ ] PostgreSQL database provisioned and `user_tokens` table created
 - [ ] Database backups automated
 - [ ] Monitoring and alerting configured
 - [ ] Resource limits set appropriately
 - [ ] Health checks configured
 - [ ] Ingress/Load balancer configured
 - [ ] Domain DNS configured
-- [ ] Telegram webhook verified
-- [ ] Google OAuth callback working
+- [ ] Telegram webhook verified (`getWebhookInfo`)
+- [ ] Google OAuth callback URL registered in Google Cloud Console
+- [ ] Google OAuth flow tested end-to-end
+- [ ] Google Drive message storage verified
 - [ ] Logs aggregation configured
 - [ ] Disaster recovery plan documented
 - [ ] Security scanning enabled
@@ -870,6 +926,8 @@ kubectl edit deployment telegram-bot -n telegram-bot
 - [Docker Documentation](https://docs.docker.com/)
 - [Telegram Bot API](https://core.telegram.org/bots/api)
 - [Google Drive API](https://developers.google.com/drive/api/v3/about-sdk)
+- [Google OAuth 2.0](https://developers.google.com/identity/protocols/oauth2)
+- [Supabase](https://supabase.com/docs)
 - [nginx Ingress Controller](https://kubernetes.github.io/ingress-nginx/)
 - [cert-manager](https://cert-manager.io/docs/)
 
@@ -885,5 +943,5 @@ For issues or questions:
 
 ---
 
-**Last Updated**: 2024-02-14
-**Version**: 1.0.0
+**Last Updated**: 2026-03-11
+**Version**: 1.1.0

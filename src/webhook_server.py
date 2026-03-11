@@ -194,6 +194,9 @@ def main():
         asyncio.run_coroutine_threadsafe(bot_app.initialize(), event_loop).result(timeout=10)
         logger.info("Bot application initialized")
 
+        asyncio.run_coroutine_threadsafe(bot_app.start(), event_loop).result(timeout=10)
+        logger.info("Bot application started")
+
         asyncio.run_coroutine_threadsafe(set_webhook(), event_loop).result(timeout=10)
 
         # Start Flask server

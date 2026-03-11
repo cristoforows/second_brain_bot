@@ -34,6 +34,8 @@ Before deploying, update these files:
 
 **configmap.yaml** - Update:
 - `WEBHOOK_URL`: Your public domain
+- `WEBHOOK_PATH`: Webhook path prefix (default: `/webhook`)
+- `DRIVE_FOLDER_NAME`: Markdown filename in Drive (default: `second_brain_inbox.md`)
 
 **deployment.yaml** - Update:
 - `image`: Your container registry and image
@@ -85,8 +87,15 @@ Use one of these secure methods:
 kubectl create secret generic telegram-bot-secrets \
   --namespace=telegram-bot \
   --from-literal=TELEGRAM_BOT_TOKEN='your-token' \
-  --from-literal=GOOGLE_CLIENT_ID='your-id' \
-  # ... etc
+  --from-literal=GOOGLE_CLIENT_ID='your-client-id' \
+  --from-literal=GOOGLE_CLIENT_SECRET='your-secret' \
+  --from-literal=GOOGLE_REDIRECT_URI='https://your-domain.com/oauth/callback' \
+  --from-literal=DATABASE_USER='dbuser' \
+  --from-literal=DATABASE_PASSWORD='dbpass' \
+  --from-literal=DATABASE_HOST='db-host' \
+  --from-literal=DATABASE_PORT='5432' \
+  --from-literal=DATABASE_NAME='second_brain' \
+  --from-literal=TOKEN_ENCRYPTION_KEY='your-fernet-key'
 ```
 
 #### Option 2: Sealed Secrets
