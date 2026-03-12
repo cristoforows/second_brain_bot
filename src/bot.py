@@ -255,6 +255,31 @@ async def store_message_on_drive(update: Update, context: ContextTypes.DEFAULT_T
         )
 
 
+async def handle_deleted_message(message_id: int, user_id: int, token_storage: TokenStorage) -> None:
+    """Delete a message from Google Drive when it's deleted in Telegram."""
+    if not token_storage or not token_storage.is_authenticated(user_id):
+        return
+
+    try:
+        service = drive_handler.get_drive_service(user_id, token_storage)
+        if not service:
+            return
+
+        folder_id = drive_handler.get_or_create_folder(service, config.drive_folder_name)
+        if not folder_id:
+            return
+
+        file_id = drive_handler.get_or_create_markdown_file(service, folder_id)
+        if not file_id:
+            return
+
+        drive_handler.delete_message(service, file_id, message_id)
+        logger.info(f"Deleted message {message_id} from Drive for user {user_id}")
+
+    except Exception as e:
+        logger.error(f"Error deleting message {message_id} for user {user_id}: {e}")
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle errors that occur during bot operation."""
     logger.error("Exception while handling an update:", exc_info=context.error)

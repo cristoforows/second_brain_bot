@@ -67,7 +67,7 @@ def get_or_create_markdown_file(service, folder_id: str) -> str | None:
     Returns the file ID.
     """
     # today's date in YYYY-MM-DD format
-    file_name = datetime.now().strftime('%Y-%m-%d')
+    file_name = datetime.now().strftime('%Y-%m-%d') + '.md'
     try:
         # Search for existing file by name whithin the folder
         results = service.files().list(
@@ -164,9 +164,51 @@ def update_message(
         return False
 
 
+def delete_message(
+    service,
+    file_id: str,
+    message_id: int,
+) -> bool:
+    """Delete a message from the markdown file. Silently succeeds if message not found."""
+    try:
+        current_content = _download_file_content(service, file_id)
+        if current_content is None:
+            return False
+
+        updated_content = _remove_message_block(current_content, message_id)
+        if updated_content is None:
+            logger.info(f"Message {message_id} not found in file, ignoring deletion")
+            return True
+
+        return _upload_file_content(service, file_id, updated_content)
+
+    except Exception as e:
+        logger.error(f"Failed to delete message {message_id}: {e}")
+        return False
+
+
 def _format_message_block(message_id: int, content: str) -> str:
     """Format a message as a comment-style markdown block."""
     return f"<!-- msg_id: {message_id} -->\n{content}\n"
+
+
+def _remove_message_block(file_content: str, message_id: int) -> str | None:
+    """Find and remove a message block by ID from the file content.
+
+    Returns updated content, or None if message not found.
+    """
+    pattern = re.compile(rf'<!-- msg_id: {message_id} -->\n')
+    match = pattern.search(file_content)
+    if not match:
+        return None
+
+    block_start = match.start()
+    header_end = match.end()
+
+    next_match = MESSAGE_PATTERN.search(file_content, header_end)
+    block_end = next_match.start() if next_match else len(file_content)
+
+    return file_content[:block_start] + file_content[block_end:]
 
 
 def _replace_message_content(

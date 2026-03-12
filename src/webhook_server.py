@@ -13,7 +13,7 @@ import json
 import threading
 
 from config import config
-from bot import start_command, help_command, store_message_on_drive, error_handler, authenticate_command, status_command, logout_command
+from bot import start_command, help_command, store_message_on_drive, error_handler, authenticate_command, status_command, logout_command, handle_deleted_message
 from google_auth import handle_oauth_callback, TokenStorage
 
 # Configure logging
@@ -31,10 +31,31 @@ token_storage: TokenStorage = None
 async def process_update(update_data: dict) -> None:
     """Process a Telegram update asynchronously."""
     try:
+        if 'deleted_messages' in update_data:
+            await _handle_deleted_messages_update(update_data)
+            return
+
         update = Update.de_json(update_data, bot_app.bot)
         await bot_app.process_update(update)
     except Exception as e:
         logger.error(f"Error processing update: {e}", exc_info=True)
+
+
+async def _handle_deleted_messages_update(update_data: dict) -> None:
+    """Handle a message deletion update from Telegram."""
+    # In private chats the chat id is the user id
+    chat = update_data.get('chat', {})
+    user_id = chat.get('id')
+    deleted_messages = update_data.get('deleted_messages', [])
+
+    if not user_id:
+        logger.warning("Received deleted_messages update without chat id, skipping")
+        return
+
+    for msg in deleted_messages:
+        message_id = msg.get('message_id')
+        if message_id:
+            await handle_deleted_message(message_id, user_id, token_storage)
 
 
 @app.route('/')
@@ -145,7 +166,7 @@ async def set_webhook():
     try:
         await bot_app.bot.set_webhook(
             url=webhook_url,
-            allowed_updates=["message", "edited_message"]
+            allowed_updates=["message", "edited_message", "message_delete"]
         )
 
         # Verify webhook was set
