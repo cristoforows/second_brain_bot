@@ -34,6 +34,7 @@ class Config:
 
         # Google Drive settings
         self.drive_folder_name = self._get_drive_folder_name()
+        self.day_cutoff_hour = self._get_day_cutoff_hour()
 
         self._setup_logging()
 
@@ -151,6 +152,23 @@ class Config:
     def _get_drive_folder_name(self) -> str:
         """Get Drive markdown file name."""
         return os.getenv('DRIVE_FOLDER_NAME', 'second_brain_bot/')
+
+    def _get_day_cutoff_hour(self) -> int:
+        """Get the hour (0-23) before which messages belong to the previous day's file.
+
+        For example, DAY_CUTOFF_HOUR=4 means messages sent between 00:00 and 03:59
+        are appended to the previous day's file. Defaults to 0 (no cutoff — midnight).
+        """
+        raw = os.getenv('DAY_CUTOFF_HOUR', '0')
+        try:
+            hour = int(raw)
+            if not 0 <= hour <= 23:
+                logging.warning(f"DAY_CUTOFF_HOUR={hour} out of range (0-23), using 0")
+                return 0
+            return hour
+        except ValueError:
+            logging.warning(f"Invalid DAY_CUTOFF_HOUR={raw!r}, using 0")
+            return 0
 
     def _setup_logging(self):
         """Configure logging for the application."""

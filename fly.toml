@@ -7,7 +7,7 @@ app = 'second-brain-bot-old-violet-1669'
 primary_region = 'sin'
 
 [build]
-  image = 'cristoforowesley/second-brain-bot:v1.0.3'
+  image = 'cristoforowesley/second-brain-bot:v1.0.4'
 
 [http_service]
   internal_port = 8443

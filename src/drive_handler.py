@@ -61,13 +61,22 @@ def get_or_create_folder(service, folder_name: str) -> str | None:
         logger.error(f"Failed to get/create folder: {e}")
         return None
 
-def get_or_create_markdown_file(service, folder_id: str) -> str | None:
+def get_or_create_markdown_file(service, folder_id: str, day_cutoff_hour: int = 0) -> str | None:
     """Find existing markdown file or create a new one in Drive.
+
+    If the current hour is before `day_cutoff_hour`, the file for the
+    *previous* day is used instead. For example, with day_cutoff_hour=4 a
+    message sent at 02:30 is appended to yesterday's file.
 
     Returns the file ID.
     """
-    # today's date in YYYY-MM-DD format
-    file_name = datetime.now().strftime('%Y-%m-%d') + '.md'
+    now = datetime.now()
+    if day_cutoff_hour > 0 and now.hour < day_cutoff_hour:
+        from datetime import timedelta
+        target_date = (now - timedelta(days=1)).date()
+    else:
+        target_date = now.date()
+    file_name = target_date.strftime('%Y-%m-%d') + '.md'
     try:
         # Search for existing file by name whithin the folder
         results = service.files().list(

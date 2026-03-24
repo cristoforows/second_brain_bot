@@ -213,7 +213,7 @@ async def store_message_on_drive(update: Update, context: ContextTypes.DEFAULT_T
                 "Your message was not saved. Please try again later."
             )
             return
-        file_id = drive_handler.get_or_create_markdown_file(service, folder_id)
+        file_id = drive_handler.get_or_create_markdown_file(service, folder_id, config.day_cutoff_hour)
         if not file_id:
             await message.reply_text(
                 "Could not find or create the markdown file in Google Drive. "
@@ -269,7 +269,7 @@ async def handle_deleted_message(message_id: int, user_id: int, token_storage: T
         if not folder_id:
             return
 
-        file_id = drive_handler.get_or_create_markdown_file(service, folder_id)
+        file_id = drive_handler.get_or_create_markdown_file(service, folder_id, config.day_cutoff_hour)
         if not file_id:
             return
 
