@@ -181,7 +181,7 @@ The OAuth CSRF state cache is in-memory. If the bot restarts between a user clic
 second_brain_bot/
 ├── src/
 │   ├── bot.py              # Command handlers (/start, /help, /authenticate, /status, /logout)
-│   ├── webhook_server.py   # Flask server: /webhook/<token>, /oauth/callback, / (health)
+│   ├── webhook_server.py   # Flask server: /webhook/<token>, /oauth/callback, / (health), /api/send-message (outbound)
 │   ├── config.py           # Loads and validates environment variables
 │   ├── google_auth.py      # OAuth 2.0 flow, CSRF state, encrypted token storage (PostgreSQL)
 │   └── drive_handler.py    # Google Drive API: create/append/edit markdown files

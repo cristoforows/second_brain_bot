@@ -84,6 +84,9 @@ DATABASE_PORT=5432
 DATABASE_NAME=second_brain
 TOKEN_ENCRYPTION_KEY=your-generated-fernet-key
 DRIVE_FOLDER_NAME=second_brain_inbox.md
+# Optional: enable POST /api/send-message (leave unset to disable / return 503).
+# Generate with: openssl rand -hex 32
+OUTBOUND_API_SECRET=
 ```
 
 #### Step 3: Build and Run
@@ -122,6 +125,12 @@ curl https://your-domain.com/
 
 # Send test message to bot on Telegram
 # Bot should respond with authentication prompt
+
+# (Optional) Test outbound send-message endpoint — requires OUTBOUND_API_SECRET set
+curl -X POST https://your-domain.com/api/send-message \
+  -H "Authorization: Bearer $OUTBOUND_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": <your-telegram-user-id>, "text": "hello from /api/send-message"}'
 ```
 
 #### Management Commands

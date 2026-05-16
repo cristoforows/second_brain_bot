@@ -73,13 +73,26 @@ go to [DEPLOY.md](DEPLOY.md) for remote deployment.
 
 Once authenticated, send any text message and it gets saved to a daily markdown file in your Google Drive. Edit a message in Telegram and the Drive file updates automatically.
 
+### Outbound Send-Message API
+
+`POST /api/send-message` lets a trusted caller make the bot send a Telegram message. Disabled unless `OUTBOUND_API_SECRET` is set.
+
+```bash
+curl -X POST https://your-domain.com/api/send-message \
+  -H "Authorization: Bearer $OUTBOUND_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": 123456789, "text": "hello from the bot"}'
+```
+
+Body fields: `chat_id` (int or string, required), `text` (string, required, ≤4096 chars), `parse_mode` (optional: `Markdown`, `MarkdownV2`, or `HTML`). Returns `{"ok": true, "message_id": <int>}` on success.
+
 ## Project Structure
 
 ```
 second_brain_bot/
 ├── src/
 │   ├── bot.py              # Command handlers (/start, /help, /authenticate, /status, /logout)
-│   ├── webhook_server.py   # Flask server: webhook receiver + OAuth callback endpoint
+│   ├── webhook_server.py   # Flask server: Telegram webhook, OAuth callback, outbound /api/send-message
 │   ├── config.py           # Configuration and environment management
 │   ├── google_auth.py      # OAuth 2.0 flow, token storage (PostgreSQL), CSRF protection
 │   └── drive_handler.py    # Google Drive API: file creation, message append/edit
@@ -109,6 +122,7 @@ second_brain_bot/
 - `DATABASE_USER` / `DATABASE_PASSWORD` / `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_NAME` (required) - PostgreSQL connection details
 - `TOKEN_ENCRYPTION_KEY` (required) - Fernet key for encrypting stored OAuth tokens
 - `DRIVE_FOLDER_NAME` (optional, default `second_brain_inbox.md`) - Markdown filename in user's Drive
+- `OUTBOUND_API_SECRET` (optional) - Shared secret for `POST /api/send-message`; leave unset to disable (returns 503). Generate with `openssl rand -hex 32`.
 - `LOG_LEVEL` (optional, default `INFO`) - Logging verbosity: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 ### Google OAuth & Drive Setup
