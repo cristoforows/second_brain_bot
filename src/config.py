@@ -36,6 +36,9 @@ class Config:
         self.drive_folder_name = self._get_drive_folder_name()
         self.day_cutoff_hour = self._get_day_cutoff_hour()
 
+        # Outbound send-message endpoint
+        self.outbound_api_secret = self._get_outbound_api_secret()
+
         self._setup_logging()
 
     def _get_bot_token(self) -> str:
@@ -169,6 +172,14 @@ class Config:
         except ValueError:
             logging.warning(f"Invalid DAY_CUTOFF_HOUR={raw!r}, using 0")
             return 0
+
+    def _get_outbound_api_secret(self) -> str | None:
+        """Get the shared secret for the outbound send-message endpoint.
+
+        Returns None when unset, which disables the endpoint (503).
+        """
+        secret = os.getenv('OUTBOUND_API_SECRET')
+        return secret or None
 
     def _setup_logging(self):
         """Configure logging for the application."""

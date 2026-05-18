@@ -5,10 +5,12 @@ Receives webhook updates from Telegram and processes them.
 """
 
 import logging
-from flask import Flask, request, Response
+from flask import Flask, request, Response, jsonify
 from telegram import Update
+from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import Application
 import asyncio
+import hmac
 import json
 import threading
 
@@ -103,6 +105,68 @@ def oauth_callback():
         logger.error(f"Failed to send confirmation to user {user_id}: {e}")
 
     return "<h1>Authentication Successful!</h1><p>You can close this window and return to Telegram.</p>"
+
+
+TELEGRAM_MAX_TEXT_LEN = 4096
+ALLOWED_PARSE_MODES = {'Markdown', 'MarkdownV2', 'HTML'}
+
+
+@app.route('/api/send-message', methods=['POST'])
+def send_message():
+    """Send a Telegram message as the bot. Auth via Authorization: Bearer <secret>.
+
+    A leaked secret grants full bot impersonation — treat it like the bot token.
+    """
+    if not config.outbound_api_secret:
+        return jsonify({'error': 'endpoint disabled'}), 503
+
+    auth_header = request.headers.get('Authorization', '')
+    prefix = 'Bearer '
+    if not auth_header.startswith(prefix) or not hmac.compare_digest(
+        auth_header[len(prefix):], config.outbound_api_secret
+    ):
+        logger.warning("send-message: invalid or missing Authorization header")
+        return jsonify({'error': 'unauthorized'}), 401
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'body must be a JSON object'}), 400
+
+    chat_id = body.get('chat_id')
+    if not isinstance(chat_id, (int, str)) or (isinstance(chat_id, str) and not chat_id):
+        return jsonify({'error': 'chat_id is required (int or non-empty string)'}), 400
+
+    text = body.get('text')
+    if not isinstance(text, str) or not text:
+        return jsonify({'error': 'text is required (non-empty string)'}), 400
+    if len(text) > TELEGRAM_MAX_TEXT_LEN:
+        return jsonify({'error': f'text exceeds {TELEGRAM_MAX_TEXT_LEN} chars'}), 400
+
+    parse_mode = body.get('parse_mode')
+    send_kwargs = {'chat_id': chat_id, 'text': text}
+    if parse_mode is not None:
+        if parse_mode not in ALLOWED_PARSE_MODES:
+            return jsonify({'error': f'parse_mode must be one of {sorted(ALLOWED_PARSE_MODES)}'}), 400
+        send_kwargs['parse_mode'] = parse_mode
+
+    async def do_send():
+        return await bot_app.bot.send_message(**send_kwargs)
+
+    try:
+        sent = asyncio.run_coroutine_threadsafe(do_send(), event_loop).result(timeout=10)
+        return jsonify({'ok': True, 'message_id': sent.message_id}), 200
+    except BadRequest as e:
+        logger.warning(f"send-message: Telegram BadRequest: {e}")
+        return jsonify({'error': f'telegram bad request: {e}'}), 400
+    except Forbidden as e:
+        logger.warning(f"send-message: Telegram Forbidden: {e}")
+        return jsonify({'error': f'telegram forbidden: {e}'}), 403
+    except TelegramError as e:
+        logger.error(f"send-message: Telegram error: {e}", exc_info=True)
+        return jsonify({'error': f'telegram error: {e}'}), 502
+    except Exception as e:
+        logger.error(f"send-message: unexpected error: {e}", exc_info=True)
+        return jsonify({'error': 'internal error'}), 500
 
 
 @app.route(f'/webhook/<token>', methods=['POST'])
