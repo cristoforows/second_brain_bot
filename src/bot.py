@@ -294,6 +294,27 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.error(f"Failed to send error message to user: {e}")
 
 
+def register_handlers(application: Application) -> None:
+    """Register all bot handlers in the required order.
+
+    Order matters: command handlers first, then the catch-all text message
+    handlers (new + edited messages -> Drive), plus the error handler.
+    """
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("authenticate", authenticate_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("logout", logout_command))
+
+    text_filter = filters.TEXT & ~filters.COMMAND
+    application.add_handler(MessageHandler(filters.UpdateType.MESSAGE & text_filter, store_message_on_drive))
+    application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & text_filter, store_message_on_drive))
+
+    application.add_error_handler(error_handler)
+
+    logger.info("Bot handlers registered successfully")
+
+
 def main() -> None:
     """Main function to start the bot."""
     logger.info("Starting Second Brain Bot...")
@@ -302,22 +323,7 @@ def main() -> None:
         # Create the Application
         application = Application.builder().token(config.bot_token).build()
 
-        # Register command handlers
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("authenticate", authenticate_command))
-        application.add_handler(CommandHandler("status", status_command))
-        application.add_handler(CommandHandler("logout", logout_command))
-
-        # Register message handler to save messages to Google Drive
-        text_filter = filters.TEXT & ~filters.COMMAND
-        application.add_handler(MessageHandler(filters.UpdateType.MESSAGE & text_filter, store_message_on_drive))
-        application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & text_filter, store_message_on_drive))
-
-        # Register error handler
-        application.add_error_handler(error_handler)
-
-        logger.info("Bot handlers registered successfully")
+        register_handlers(application)
         logger.info("Starting polling...")
 
         # Start polling for updates
