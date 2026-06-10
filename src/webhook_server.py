@@ -15,7 +15,7 @@ import json
 import threading
 
 from config import config
-from bot import start_command, help_command, store_message_on_drive, error_handler, authenticate_command, status_command, logout_command, handle_deleted_message
+from bot import register_handlers, handle_deleted_message
 from google_auth import handle_oauth_callback, TokenStorage
 
 # Configure logging
@@ -200,23 +200,7 @@ def setup_bot_application() -> Application:
     # Create the Application
     application = Application.builder().token(config.bot_token).build()
 
-    # Register command handlers
-    from telegram.ext import CommandHandler, MessageHandler, filters
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("authenticate", authenticate_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("logout", logout_command))
-
-    # Register message handler for text messages
-    text_filter = filters.TEXT & ~filters.COMMAND
-    application.add_handler(MessageHandler(filters.UpdateType.MESSAGE & text_filter, store_message_on_drive))
-    application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & text_filter, store_message_on_drive))
-
-    # Register error handler
-    application.add_error_handler(error_handler)
-
-    logger.info("Bot handlers registered successfully")
+    register_handlers(application)
     return application
 
 
