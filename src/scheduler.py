@@ -6,13 +6,17 @@ thin glue. The LLM client is injected so everything is testable offline.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger(__name__)
+
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_MAX_ATTEMPTS = 2  # one automatic retry
 
 DEFAULT_WINDOW_START = "09:00"
 DEFAULT_WINDOW_END = "22:00"
@@ -78,8 +82,17 @@ def create_llm(api_key: str, model: str) -> ChatOpenAI:
     )
 
 
+class ScheduleGenerationError(Exception):
+    """The LLM failed to produce a valid schedule after the automatic retry.
+
+    The caller should keep the task buffer so the user can retry /done."""
+
+
 def generate_schedule(tasks: list[str], target_date: date, llm) -> TimeboxResult:
-    """Turn raw task messages into a structured timeboxed plan via the LLM."""
+    """Turn raw task messages into a structured timeboxed plan via the LLM.
+
+    Retries once on API errors or invalid structured output; raises
+    ScheduleGenerationError after the second failure."""
     structured_llm = llm.with_structured_output(TimeboxResult)
     system = _SYSTEM_PROMPT.format(
         target_date=target_date.isoformat(),
@@ -87,7 +100,22 @@ def generate_schedule(tasks: list[str], target_date: date, llm) -> TimeboxResult
         window_start=DEFAULT_WINDOW_START,
         window_end=DEFAULT_WINDOW_END,
     )
-    return structured_llm.invoke([("system", system), ("human", "\n".join(tasks))])
+    messages = [("system", system), ("human", "\n".join(tasks))]
+
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            result = structured_llm.invoke(messages)
+            if result is None:
+                # with_structured_output returns None when parsing fails silently
+                raise ValueError("structured output could not be parsed")
+            return result
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Schedule generation attempt {attempt} failed: {e}")
+    raise ScheduleGenerationError(
+        f"schedule generation failed after {_MAX_ATTEMPTS} attempts"
+    ) from last_error
 
 
 def render_schedule(result: TimeboxResult, target_date: date) -> str:

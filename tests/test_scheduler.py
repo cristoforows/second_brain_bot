@@ -1,9 +1,12 @@
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from scheduler import (
     DroppedTask,
     ScheduleItem,
+    ScheduleGenerationError,
     TimeboxResult,
     compute_target_date,
     generate_schedule,
@@ -14,18 +17,23 @@ SG = "Asia/Singapore"  # UTC+8, no DST
 
 
 class FakeStructuredLLM:
-    def __init__(self, result):
-        self._result = result
+    """Returns each queued outcome in turn; raising ones are Exception instances."""
+
+    def __init__(self, *outcomes):
+        self._outcomes = list(outcomes)
         self.messages = None
 
     def invoke(self, messages):
         self.messages = messages
-        return self._result
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 class FakeLLM:
-    def __init__(self, result):
-        self.structured = FakeStructuredLLM(result)
+    def __init__(self, *outcomes):
+        self.structured = FakeStructuredLLM(*outcomes)
         self.schema = None
 
     def with_structured_output(self, schema):
@@ -120,3 +128,28 @@ def test_generate_sends_tasks_verbatim_with_target_date_and_window():
     assert "2026-06-12" in system_text
     assert "09:00" in system_text and "22:00" in system_text
     assert human_text == "wash dishes\ncall mom after 6pm"
+
+
+def test_single_failure_is_retried_transparently():
+    canned = _result()
+    llm = FakeLLM(RuntimeError("api hiccup"), canned)
+    assert generate_schedule(["wash dishes"], date(2026, 6, 12), llm) is canned
+
+
+def test_unparseable_output_counts_as_failure_and_is_retried():
+    canned = _result()
+    llm = FakeLLM(None, canned)  # with_structured_output yields None on parse failure
+    assert generate_schedule(["wash dishes"], date(2026, 6, 12), llm) is canned
+
+
+def test_double_failure_raises_and_same_tasks_can_be_retried():
+    tasks = ["wash dishes", "gym 1h"]
+    failing = FakeLLM(RuntimeError("down"), RuntimeError("still down"))
+    with pytest.raises(ScheduleGenerationError):
+        generate_schedule(tasks, date(2026, 6, 12), failing)
+
+    # caller re-invokes with the identical task list and now succeeds
+    canned = _result()
+    recovered = FakeLLM(canned)
+    assert generate_schedule(tasks, date(2026, 6, 12), recovered) is canned
+    assert recovered.structured.messages[1][1] == "wash dishes\ngym 1h"
