@@ -14,6 +14,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 from config import config
 from google_auth import generate_auth_url, TokenStorage
+from timebox import build_timebox_handler
 import drive_handler
 
 # Configure logging
@@ -37,6 +38,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "You are authenticated with Google Drive.\n"
             "Send me any message and I'll save it to your Drive.\n\n"
             "Commands:\n"
+            "/timebox - Plan a timeboxed schedule for tomorrow\n"
             "/status - Check connection status\n"
             "/logout - Disconnect Google Drive\n"
             "/help - Show help"
@@ -67,6 +69,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Edit a message here and it updates in Drive too.\n\n"
         "Commands:\n"
         "/authenticate - Connect your Google Drive\n"
+        "/timebox - Plan a timeboxed schedule for tomorrow\n"
         "/status - Check connection status\n"
         "/logout - Disconnect Google Drive\n"
         "/help - Show this help message\n\n"
@@ -297,14 +300,17 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 def register_handlers(application: Application) -> None:
     """Register all bot handlers in the required order.
 
-    Order matters: command handlers first, then the catch-all text message
-    handlers (new + edited messages -> Drive), plus the error handler.
+    Order matters: command handlers first, then the /timebox conversation
+    (which diverts session messages from Drive), then the catch-all text
+    message handlers (new + edited messages -> Drive), plus the error handler.
     """
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("authenticate", authenticate_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("logout", logout_command))
+
+    application.add_handler(build_timebox_handler())
 
     text_filter = filters.TEXT & ~filters.COMMAND
     application.add_handler(MessageHandler(filters.UpdateType.MESSAGE & text_filter, store_message_on_drive))

@@ -6,6 +6,8 @@ Handles environment variables, token validation, and logging setup.
 import os
 import logging
 import sys
+from zoneinfo import ZoneInfo
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -38,6 +40,12 @@ class Config:
 
         # Outbound send-message endpoint
         self.outbound_api_secret = self._get_outbound_api_secret()
+
+        # Timebox (/timebox LLM scheduling)
+        self.openrouter_api_key = self._get_openrouter_api_key()
+        self.timebox_llm_model = self._get_timebox_llm_model()
+        self.timebox_timezone = self._get_timebox_timezone()
+        self.timebox_cutoff_hour = self._get_timebox_cutoff_hour()
 
         self._setup_logging()
 
@@ -180,6 +188,47 @@ class Config:
         """
         secret = os.getenv('OUTBOUND_API_SECRET')
         return secret or None
+
+    def _get_openrouter_api_key(self) -> str:
+        """Get the OpenRouter API key for /timebox schedule generation."""
+        key = os.getenv('OPENROUTER_API_KEY')
+        if not key:
+            logging.error("OPENROUTER_API_KEY not found in environment variables")
+            logging.error("The /timebox command requires an OpenRouter API key (https://openrouter.ai/keys)")
+            sys.exit(1)
+        return key
+
+    def _get_timebox_llm_model(self) -> str:
+        """Get the OpenRouter model used for /timebox scheduling."""
+        return os.getenv('TIMEBOX_LLM_MODEL', 'deepseek/deepseek-v4-flash')
+
+    def _get_timebox_timezone(self) -> str:
+        """Get the IANA timezone used to compute the /timebox target day."""
+        name = os.getenv('TIMEBOX_TIMEZONE', 'Asia/Singapore')
+        try:
+            ZoneInfo(name)
+        except Exception:
+            logging.warning(f"Invalid TIMEBOX_TIMEZONE={name!r}, using Asia/Singapore")
+            return 'Asia/Singapore'
+        return name
+
+    def _get_timebox_cutoff_hour(self) -> int:
+        """Get the late-night cutoff hour (0-23) for /timebox target-day selection.
+
+        A session finishing at a local hour strictly below the cutoff plans the
+        *current* day instead of tomorrow. Deliberately separate from
+        DAY_CUTOFF_HOUR (Drive daily-file naming) — do not couple them.
+        """
+        raw = os.getenv('TIMEBOX_CUTOFF_HOUR', '3')
+        try:
+            hour = int(raw)
+            if not 0 <= hour <= 23:
+                logging.warning(f"TIMEBOX_CUTOFF_HOUR={hour} out of range (0-23), using 3")
+                return 3
+            return hour
+        except ValueError:
+            logging.warning(f"Invalid TIMEBOX_CUTOFF_HOUR={raw!r}, using 3")
+            return 3
 
     def _setup_logging(self):
         """Configure logging for the application."""
