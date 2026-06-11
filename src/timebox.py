@@ -70,7 +70,7 @@ def _llm():
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /done - end the session and reply with the generated schedule."""
-    tasks = context.user_data.pop(_TASKS_KEY, [])
+    tasks = context.user_data.get(_TASKS_KEY) or []
     if not tasks:
         await update.message.reply_text("No tasks collected — timebox session ended.")
         return ConversationHandler.END
@@ -78,8 +78,21 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     target_date = scheduler.compute_target_date(
         datetime.now(timezone.utc), config.timebox_timezone, config.timebox_cutoff_hour
     )
-    # to_thread: the langchain call is sync; don't block the event loop
-    result = await asyncio.to_thread(scheduler.generate_schedule, tasks, target_date, _llm())
+    try:
+        # to_thread: the langchain call is sync; don't block the event loop
+        result = await asyncio.to_thread(
+            scheduler.generate_schedule, tasks, target_date, _llm()
+        )
+    except scheduler.ScheduleGenerationError:
+        logger.error(f"Schedule generation failed twice for user {update.effective_user.id}")
+        # Buffer stays intact; the session stays open so /done retries as-is
+        await update.message.reply_text(
+            "Scheduling failed — your tasks are still saved. "
+            "Send /done again to retry, or /cancel to abort."
+        )
+        return COLLECTING
+
+    context.user_data.pop(_TASKS_KEY, None)
     await update.message.reply_text(scheduler.render_schedule(result, target_date))
     logger.info(
         f"Timebox schedule for {target_date} sent to user {update.effective_user.id}: "
