@@ -1,10 +1,13 @@
 """/timebox conversation: collect next-day tasks one per message.
 
-Thin Telegram glue only — session state and I/O. Scheduling judgment will
-live in the scheduler module (next slice); /done currently echoes the buffer.
+Thin Telegram glue only — session state and I/O. All scheduling judgment
+lives in the scheduler module.
 """
 
+import asyncio
 import logging
+from datetime import datetime, timezone
+from functools import lru_cache
 
 from telegram import Update
 from telegram.constants import ReactionEmoji
@@ -15,6 +18,9 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+from config import config
+import scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -55,19 +61,42 @@ async def collect_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return COLLECTING
 
 
+@lru_cache(maxsize=1)
+def _llm():
+    return scheduler.create_llm(
+        api_key=config.openrouter_api_key, model=config.timebox_llm_model
+    )
+
+
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /done - end the session and reply with the collected tasks."""
-    tasks = context.user_data.pop(_TASKS_KEY, [])
+    """Handle /done - end the session and reply with the generated schedule."""
+    tasks = context.user_data.get(_TASKS_KEY) or []
     if not tasks:
         await update.message.reply_text("No tasks collected — timebox session ended.")
         return ConversationHandler.END
 
-    task_list = "\n".join(f"{i}. {task}" for i, task in enumerate(tasks, start=1))
-    # Placeholder echo; the LLM-generated schedule replaces this in the next slice
-    await update.message.reply_text(f"Collected {len(tasks)} task(s):\n{task_list}")
+    target_date = scheduler.compute_target_date(
+        datetime.now(timezone.utc), config.timebox_timezone, config.timebox_cutoff_hour
+    )
+    try:
+        # to_thread: the langchain call is sync; don't block the event loop
+        result = await asyncio.to_thread(
+            scheduler.generate_schedule, tasks, target_date, _llm()
+        )
+    except scheduler.ScheduleGenerationError:
+        logger.error(f"Schedule generation failed twice for user {update.effective_user.id}")
+        # Buffer stays intact; the session stays open so /done retries as-is
+        await update.message.reply_text(
+            "Scheduling failed — your tasks are still saved. "
+            "Send /done again to retry, or /cancel to abort."
+        )
+        return COLLECTING
+
+    context.user_data.pop(_TASKS_KEY, None)
+    await update.message.reply_text(scheduler.render_schedule(result, target_date))
     logger.info(
-        f"Timebox session finished for user {update.effective_user.id} "
-        f"with {len(tasks)} tasks"
+        f"Timebox schedule for {target_date} sent to user {update.effective_user.id}: "
+        f"{len(result.schedule)} scheduled, {len(result.dropped)} dropped"
     )
     return ConversationHandler.END
 
