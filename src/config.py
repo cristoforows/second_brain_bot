@@ -47,6 +47,17 @@ class Config:
         self.timebox_timezone = self._get_timebox_timezone()
         self.timebox_cutoff_hour = self._get_timebox_cutoff_hour()
 
+        # Timebox -> Google Calendar publishing
+        self.timebox_calendar_id = self._get_timebox_calendar_id()
+        self.timebox_day_start = self._get_time_of_day('TIMEBOX_DAY_START', '09:00')
+        self.timebox_day_end = self._get_time_of_day('TIMEBOX_DAY_END', '22:00')
+        self.timebox_lunch = self._get_time_of_day('TIMEBOX_LUNCH', '12:30')
+        self.timebox_dinner = self._get_time_of_day('TIMEBOX_DINNER', '19:00')
+        self.timebox_eat_duration = self._get_duration_minutes('TIMEBOX_EAT_DURATION', 60)
+        self.timebox_commute_morning = self._get_time_of_day('TIMEBOX_COMMUTE_MORNING', '08:00')
+        self.timebox_commute_evening = self._get_time_of_day('TIMEBOX_COMMUTE_EVENING', '18:00')
+        self.timebox_commute_duration = self._get_duration_minutes('TIMEBOX_COMMUTE_DURATION', 45)
+
         self._setup_logging()
 
     def _get_bot_token(self) -> str:
@@ -229,6 +240,49 @@ class Config:
         except ValueError:
             logging.warning(f"Invalid TIMEBOX_CUTOFF_HOUR={raw!r}, using 3")
             return 3
+
+    def _get_timebox_calendar_id(self) -> str | None:
+        """Get the Calendar ID that /timebox writes events into.
+
+        Must be a dedicated calendar (never the user's primary). Returns None
+        when unset, which disables calendar publishing (schedule is still
+        replied as text).
+        """
+        cal_id = os.getenv('TIMEBOX_CALENDAR_ID', '').strip()
+        if not cal_id:
+            logging.warning(
+                "TIMEBOX_CALENDAR_ID not set — /timebox will reply the schedule "
+                "as text only and skip writing to Google Calendar"
+            )
+            return None
+        if cal_id == 'primary':
+            logging.error("TIMEBOX_CALENDAR_ID must not be 'primary'; use a dedicated calendar")
+            sys.exit(1)
+        return cal_id
+
+    def _get_time_of_day(self, env_name: str, default: str) -> str:
+        """Get and validate an HH:MM time-of-day env var, falling back to default."""
+        raw = os.getenv(env_name, default).strip() or default
+        try:
+            hh, mm = raw.split(':')
+            if 0 <= int(hh) <= 23 and 0 <= int(mm) <= 59:
+                return f"{int(hh):02d}:{int(mm):02d}"
+        except (ValueError, TypeError):
+            pass
+        logging.warning(f"Invalid {env_name}={raw!r}, using {default}")
+        return default
+
+    def _get_duration_minutes(self, env_name: str, default: int) -> int:
+        """Get and validate a positive integer minutes env var."""
+        raw = os.getenv(env_name, str(default))
+        try:
+            minutes = int(raw)
+            if minutes > 0:
+                return minutes
+        except (ValueError, TypeError):
+            pass
+        logging.warning(f"Invalid {env_name}={raw!r}, using {default}")
+        return default
 
     def _setup_logging(self):
         """Configure logging for the application."""
