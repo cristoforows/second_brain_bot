@@ -7,7 +7,9 @@ thin glue. The LLM client is injected so everything is testable offline.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from langchain_openai import ChatOpenAI
@@ -18,29 +20,62 @@ logger = logging.getLogger(__name__)
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _MAX_ATTEMPTS = 2  # one automatic retry
 
-DEFAULT_WINDOW_START = "09:00"
-DEFAULT_WINDOW_END = "22:00"
+Mode = Literal["office", "wfh"]
+
+
+@dataclass(frozen=True)
+class DayConfig:
+    """Fixed daily anchors handed to the planner as overridable defaults.
+
+    Times are HH:MM (24h); durations are minutes. The LLM owns placement and
+    may override any of these when a user task clearly states a different time.
+    """
+
+    day_start: str
+    day_end: str
+    lunch: str
+    dinner: str
+    eat_duration_min: int
+    commute_morning: str
+    commute_evening: str
+    commute_duration_min: int
+
 
 # The prompt is expected to be tuned after a few days of real use — keep it here.
 _SYSTEM_PROMPT = """\
 You are a meticulous personal day planner. Build a timeboxed schedule for \
-{target_date} ({weekday}).
+{target_date} ({weekday}). The user is in "{mode}" mode today.
 
 You receive the user's tasks verbatim, one per line, in the order they were sent.
 
+Fixed daily blocks (defaults — treat each as a normal slot in your output):
+- The day runs {day_start} to {day_end}. Place everything inside this window \
+unless a task explicitly states otherwise (e.g. "start my day at 7").
+- Lunch at {lunch} for {eat_duration} minutes (task name: "Lunch").
+- Dinner at {dinner} for {eat_duration} minutes (task name: "Dinner").
+{commute_block}
+
 Rules:
+- Emit the fixed blocks above as their own slots. BUT if a user task clearly \
+occupies one of those times (e.g. "lunch meeting at 12:30"), replace that block \
+with the user's task instead of emitting both.
 - A task may include a duration (e.g. "90m", "2h") and/or freeform constraints \
 (e.g. "morning", "after 6pm"). Honor them exactly.
 - Estimate a sensible duration for any task that has none.
-- Place every task within the waking window {window_start}-{window_end}. If the \
-user explicitly states a different window in a task (e.g. "start my day at 7"), \
-honor their window instead.
 - Time slots must not overlap. Short breathing gaps between tasks are fine.
 - If everything cannot fit in the day, drop the least important / least \
 time-pressured tasks until the plan fits. Report every dropped task with a \
 one-line reason. Never ask the user questions.
 - Use 24-hour HH:MM times.
 """
+
+_COMMUTE_OFFICE = (
+    "- Morning commute at {commute_morning} for {commute_duration} minutes "
+    '(task name: "Commute").\n'
+    "- Evening commute at {commute_evening} for {commute_duration} minutes "
+    '(task name: "Commute").'
+)
+_COMMUTE_WFH = "- Working from home today: no commute blocks."
 
 
 class ScheduleItem(BaseModel):
@@ -88,18 +123,40 @@ class ScheduleGenerationError(Exception):
     The caller should keep the task buffer so the user can retry /done."""
 
 
-def generate_schedule(tasks: list[str], target_date: date, llm) -> TimeboxResult:
-    """Turn raw task messages into a structured timeboxed plan via the LLM.
-
-    Retries once on API errors or invalid structured output; raises
-    ScheduleGenerationError after the second failure."""
-    structured_llm = llm.with_structured_output(TimeboxResult)
-    system = _SYSTEM_PROMPT.format(
+def _build_system_prompt(target_date: date, day: DayConfig, mode: Mode) -> str:
+    """Render the planner system prompt for the given day config and mode."""
+    if mode == "office":
+        commute_block = _COMMUTE_OFFICE.format(
+            commute_morning=day.commute_morning,
+            commute_evening=day.commute_evening,
+            commute_duration=day.commute_duration_min,
+        )
+    else:
+        commute_block = _COMMUTE_WFH
+    return _SYSTEM_PROMPT.format(
         target_date=target_date.isoformat(),
         weekday=target_date.strftime("%A"),
-        window_start=DEFAULT_WINDOW_START,
-        window_end=DEFAULT_WINDOW_END,
+        mode=mode,
+        day_start=day.day_start,
+        day_end=day.day_end,
+        lunch=day.lunch,
+        dinner=day.dinner,
+        eat_duration=day.eat_duration_min,
+        commute_block=commute_block,
     )
+
+
+def generate_schedule(
+    tasks: list[str], target_date: date, llm, day: DayConfig, mode: Mode
+) -> TimeboxResult:
+    """Turn raw task messages into a structured timeboxed plan via the LLM.
+
+    Fixed daily blocks (lunch/dinner/commute, bounded by the day window) are
+    passed as overridable defaults; commute blocks are only included in office
+    mode. Retries once on API errors or invalid structured output; raises
+    ScheduleGenerationError after the second failure."""
+    structured_llm = llm.with_structured_output(TimeboxResult)
+    system = _build_system_prompt(target_date, day, mode)
     messages = [("system", system), ("human", "\n".join(tasks))]
 
     last_error: Exception | None = None
