@@ -16,6 +16,7 @@ from second_brain.core.config import config
 from second_brain.bot.google_auth import generate_auth_url, TokenStorage
 from second_brain.bot.timebox import build_timebox_handler
 from second_brain.bot.search import search_command
+from second_brain.bot.reminders import remind_command
 from second_brain.bot import capture
 
 # Configure logging
@@ -40,6 +41,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "Send me any message and I'll save it to your Drive.\n\n"
             "Commands:\n"
             "/search - Search your captured notes\n"
+            "/remind - Set a reminder (e.g. /remind 30m water)\n"
             "/timebox - Plan a timeboxed schedule for tomorrow\n"
             "/status - Check connection status\n"
             "/logout - Disconnect Google Drive\n"
@@ -72,6 +74,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Commands:\n"
         "/authenticate - Connect your Google Drive\n"
         "/search - Search your captured notes\n"
+        "/remind - Set a reminder (e.g. /remind 30m water)\n"
         "/timebox - Plan a timeboxed schedule for tomorrow\n"
         "/status - Check connection status\n"
         "/logout - Disconnect Google Drive\n"
@@ -320,6 +323,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("logout", logout_command))
     application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("remind", remind_command))
 
     application.add_handler(build_timebox_handler())
 
