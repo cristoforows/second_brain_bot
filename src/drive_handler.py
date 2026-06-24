@@ -5,7 +5,7 @@ Handles file creation, message appending, and message editing in Drive.
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
@@ -248,6 +248,36 @@ def _replace_message_content(
     new_block = f"{new_header}{new_content}\n"
 
     return file_content[:header_start] + new_block + file_content[content_end:]
+
+
+def find_daily_file(service, folder_id: str, day_cutoff_hour: int = 0) -> str | None:
+    """Return today's markdown file id (read-only), or None if it doesn't exist.
+
+    Mirrors get_or_create_markdown_file's day-cutoff logic but never creates a
+    file — used by read-only commands like /today.
+    """
+    now = datetime.now()
+    if day_cutoff_hour > 0 and now.hour < day_cutoff_hour:
+        target_date = (now - timedelta(days=1)).date()
+    else:
+        target_date = now.date()
+    file_name = target_date.strftime('%Y-%m-%d') + '.md'
+    try:
+        results = service.files().list(
+            q=f"name='{file_name}' and mimeType='{MARKDOWN_MIME_TYPE}' and trashed=false and parents='{folder_id}'",
+            spaces='drive',
+            fields='files(id, name)',
+        ).execute()
+        files = results.get('files', [])
+        return files[0]['id'] if files else None
+    except Exception as e:
+        logger.error(f"Failed to find daily file {file_name}: {e}")
+        return None
+
+
+def read_file(service, file_id: str) -> str | None:
+    """Public read of a Drive file's text content, or None on failure."""
+    return _download_file_content(service, file_id)
 
 
 def _download_file_content(service, file_id: str) -> str | None:
