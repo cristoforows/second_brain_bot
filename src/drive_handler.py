@@ -250,6 +250,26 @@ def _replace_message_content(
     return file_content[:header_start] + new_block + file_content[content_end:]
 
 
+def list_markdown_files(service, folder_id: str) -> list[dict]:
+    """Return the markdown files in the folder as [{id, name}, ...] (read-only)."""
+    try:
+        results = service.files().list(
+            q=f"mimeType='{MARKDOWN_MIME_TYPE}' and trashed=false and parents='{folder_id}'",
+            spaces='drive',
+            fields='files(id, name)',
+            pageSize=1000,
+        ).execute()
+        return results.get('files', [])
+    except Exception as e:
+        logger.error(f"Failed to list markdown files: {e}")
+        return []
+
+
+def read_file(service, file_id: str) -> str | None:
+    """Public read of a Drive file's text content, or None on failure."""
+    return _download_file_content(service, file_id)
+
+
 def _download_file_content(service, file_id: str) -> str | None:
     """Download a file's content from Drive."""
     try:
