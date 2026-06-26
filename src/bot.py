@@ -15,6 +15,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from config import config
 from google_auth import generate_auth_url, TokenStorage
 from timebox import build_timebox_handler
+from tags import tags_command, tag_command
 import drive_handler
 
 # Configure logging
@@ -38,6 +39,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "You are authenticated with Google Drive.\n"
             "Send me any message and I'll save it to your Drive.\n\n"
             "Commands:\n"
+            "/tags - List hashtags in your notes (/tag <name> to browse)\n"
             "/timebox - Plan a timeboxed schedule for tomorrow\n"
             "/status - Check connection status\n"
             "/logout - Disconnect Google Drive\n"
@@ -69,6 +71,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Edit a message here and it updates in Drive too.\n\n"
         "Commands:\n"
         "/authenticate - Connect your Google Drive\n"
+        "/tags - List hashtags in your notes (/tag <name> to browse)\n"
         "/timebox - Plan a timeboxed schedule for tomorrow\n"
         "/status - Check connection status\n"
         "/logout - Disconnect Google Drive\n"
@@ -309,6 +312,8 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("authenticate", authenticate_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("logout", logout_command))
+    application.add_handler(CommandHandler("tags", tags_command))
+    application.add_handler(CommandHandler("tag", tag_command))
 
     application.add_handler(build_timebox_handler())
 
