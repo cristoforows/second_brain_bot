@@ -14,14 +14,15 @@ Think of it as the first step in building your second brain - capturing everythi
 
 ## Current Status
 
-**Functional**: The bot has a working webhook infrastructure, Google OAuth 2.0 authentication, encrypted token storage in PostgreSQL (Supabase), and Google Drive integration for saving and editing messages as markdown files.
+**Functional**: The bot has a working webhook infrastructure, Google OAuth 2.0 authentication, encrypted token storage in PostgreSQL (Supabase), and Google Drive integration for saving and editing messages as markdown files. It also offers `/timebox` — an LLM (OpenRouter) turns your next-day tasks into a timeboxed schedule, optionally published to a dedicated Google Calendar.
 
 ## Requirements
 
-- Python 3.8 or higher
+- Python 3.10 or higher (the codebase uses `X | None` type unions; the Docker image is built on 3.11)
 - Telegram account
-- Google account with Drive API access
+- Google account with Drive **and** Calendar API access
 - Telegram bot token from @BotFather
+- OpenRouter API key (required — used by `/timebox`)
 
 ## Quick Setup
 
@@ -68,6 +69,7 @@ go to [DEPLOY.md](DEPLOY.md) for remote deployment.
 - `/start` - Initialize conversation with the bot
 - `/help` - Get help information
 - `/authenticate` - Connect your Google Drive via OAuth 2.0
+- `/timebox` - Turn next-day tasks into a timeboxed schedule (optionally written to Google Calendar)
 - `/status` - Check authentication and Drive connection status
 - `/logout` - Disconnect Google Drive and remove stored tokens
 
@@ -91,11 +93,14 @@ Body fields: `chat_id` (int or string, required), `text` (string, required, ≤4
 ```
 second_brain_bot/
 ├── src/
-│   ├── bot.py              # Command handlers (/start, /help, /authenticate, /status, /logout)
+│   ├── bot.py              # Command handlers (/start, /help, /authenticate, /timebox, /status, /logout) + register_handlers
 │   ├── webhook_server.py   # Flask server: Telegram webhook, OAuth callback, outbound /api/send-message
 │   ├── config.py           # Configuration and environment management
-│   ├── google_auth.py      # OAuth 2.0 flow, token storage (PostgreSQL), CSRF protection
-│   └── drive_handler.py    # Google Drive API: file creation, message append/edit
+│   ├── google_auth.py      # OAuth 2.0 flow (drive.file + calendar.events), token storage (PostgreSQL), CSRF protection
+│   ├── drive_handler.py    # Google Drive API: file creation, message append/edit
+│   ├── timebox.py          # /timebox conversation: collect next-day tasks, build & publish a schedule
+│   ├── scheduler.py        # Timebox scheduling: target-date, LLM generation, rendering
+│   └── calendar_handler.py # Google Calendar writes for the schedule (tag/list/clear/per-item)
 ├── k8s/                    # Kubernetes manifests
 ├── Dockerfile              # Multi-stage Docker build
 ├── docker-compose.yml      # Docker Compose deployment
@@ -121,17 +126,29 @@ second_brain_bot/
 - `GOOGLE_REDIRECT_URI` (optional) - OAuth callback URL (defaults to `{WEBHOOK_URL}/oauth/callback`)
 - `DATABASE_USER` / `DATABASE_PASSWORD` / `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_NAME` (required) - PostgreSQL connection details
 - `TOKEN_ENCRYPTION_KEY` (required) - Fernet key for encrypting stored OAuth tokens
-- `DRIVE_FOLDER_NAME` (optional, default `second_brain_inbox.md`) - Markdown filename in user's Drive
+- `DRIVE_FOLDER_NAME` (optional, default `second_brain_bot/`) - Name of the Drive folder the bot creates; daily notes are stored inside it as `YYYY-MM-DD.md`
+- `DAY_CUTOFF_HOUR` (optional, default `0`) - Hour (0-23) before which messages are filed under the previous day. `0` disables it (midnight boundary)
 - `OUTBOUND_API_SECRET` (optional) - Shared secret for `POST /api/send-message`; leave unset to disable (returns 503). Generate with `openssl rand -hex 32`.
 - `LOG_LEVEL` (optional, default `INFO`) - Logging verbosity: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+#### Timebox (`/timebox`)
+
+- `OPENROUTER_API_KEY` (**required**) - OpenRouter API key for schedule generation. Startup fails without it ([get one](https://openrouter.ai/keys))
+- `TIMEBOX_LLM_MODEL` (optional, default `deepseek/deepseek-v4-flash`) - OpenRouter model used for scheduling
+- `TIMEBOX_TIMEZONE` (optional, default `Asia/Singapore`) - IANA timezone for computing the target day
+- `TIMEBOX_CUTOFF_HOUR` (optional, default `3`) - Sessions finishing before this local hour plan the current day instead of tomorrow
+- `TIMEBOX_CALENDAR_ID` (optional) - Calendar ID of a **dedicated** calendar to publish the schedule into. Never `primary`. Unset → schedule is replied as text only
+- `TIMEBOX_DAY_START` / `TIMEBOX_DAY_END` / `TIMEBOX_LUNCH` / `TIMEBOX_DINNER` / `TIMEBOX_EAT_DURATION` / `TIMEBOX_COMMUTE_MORNING` / `TIMEBOX_COMMUTE_EVENING` / `TIMEBOX_COMMUTE_DURATION` (optional) - Fixed daily anchors handed to the planner as overridable defaults. See `.env.example` for defaults
 
 ### Google OAuth & Drive Setup
 
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com)
-2. Enable the Google Drive API
+2. Enable the Google Drive API **and** the Google Calendar API (the latter is needed for `/timebox` calendar publishing)
 3. Create OAuth 2.0 credentials (Web application type)
 4. Add your redirect URI (e.g. `https://your-domain.com/oauth/callback`)
 5. Copy the client ID and client secret to your `.env`
+
+The bot requests the `drive.file` and `calendar.events` scopes. If you authenticated before calendar support was added, re-run `/authenticate` to grant the new scope.
 
 ### Database Setup (Supabase)
 

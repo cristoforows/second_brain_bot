@@ -128,10 +128,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
 
     if not token_storage or not token_storage.is_authenticated(user_id):
-        await update.message.reply_text(
+        not_authed_message = (
             "Not Authenticated\n\n"
             "Use /authenticate to connect your Google Drive."
         )
+        if context.bot_data.get('is_local'):
+            not_authed_message += "\n\n--local"
+        await update.message.reply_text(not_authed_message)
         return
 
     token_data = token_storage.get_user_token(user_id)
@@ -148,13 +151,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except (ValueError, TypeError):
             pass
 
-    await update.message.reply_text(
+    status_message = (
         "Authentication Status\n\n"
         f"Google Drive: Connected\n"
         f"Token expires in: {expiry_info}\n"
         f"Markdown file: {config.drive_folder_name}\n\n"
         "Send any message to save to Drive!"
     )
+    if context.bot_data.get('is_local'):
+        status_message += "\n\n--local"
+
+    await update.message.reply_text(status_message)
 
 
 async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -328,6 +335,10 @@ def main() -> None:
     try:
         # Create the Application
         application = Application.builder().token(config.bot_token).build()
+
+        # Flag the local polling entrypoint so /status can show a "--local"
+        # marker. webhook_server.py (prod) never sets this.
+        application.bot_data['is_local'] = True
 
         register_handlers(application)
         logger.info("Starting polling...")

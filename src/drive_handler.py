@@ -7,10 +7,9 @@ import logging
 import re
 from datetime import datetime
 
-from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 
-from google_auth import get_credentials, TokenStorage
+from google_auth import get_google_service, TokenStorage
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +24,7 @@ MESSAGE_PATTERN = re.compile(
 
 def get_drive_service(user_id: int, token_storage: TokenStorage):
     """Get an authenticated Google Drive API service for a user."""
-    credentials = get_credentials(user_id, token_storage)
-    if not credentials:
-        return None
-    return build('drive', 'v3', credentials=credentials)
+    return get_google_service(user_id, token_storage, 'drive', 'v3')
 
 def get_or_create_folder(service, folder_name: str) -> str | None:
     """Find existing folder or create a new one in Drive.

@@ -16,10 +16,14 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
+from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SCOPES = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/calendar.events',
+]
 
 # In-memory state cache for CSRF protection during OAuth flow
 # Maps state string -> {"user_id": int, "expires": float}
@@ -261,6 +265,30 @@ def get_credentials(user_id: int, token_storage: TokenStorage) -> Credentials | 
             return None
 
     return credentials
+
+
+def get_google_service(user_id: int, token_storage: TokenStorage, api: str, version: str):
+    """Build an authenticated Google API service for a user, or None.
+
+    Shared by drive_handler and calendar_handler: same credential load/refresh
+    path, differing only in the API name/version.
+    """
+    credentials = get_credentials(user_id, token_storage)
+    if not credentials:
+        return None
+    return build(api, version, credentials=credentials)
+
+
+def has_calendar_scope(user_id: int, token_storage: TokenStorage) -> bool:
+    """True if the user's stored token was granted the calendar.events scope.
+
+    Tokens minted before calendar support lack it; the user must re-authenticate.
+    """
+    token_data = token_storage.get_user_token(user_id)
+    if not token_data:
+        return False
+    granted = token_data.get('scopes') or []
+    return 'https://www.googleapis.com/auth/calendar.events' in granted
 
 
 # --- State management (CSRF protection) ---

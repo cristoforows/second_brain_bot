@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scheduler import (
+    DayConfig,
     DroppedTask,
     ScheduleItem,
     ScheduleGenerationError,
@@ -14,6 +15,17 @@ from scheduler import (
 )
 
 SG = "Asia/Singapore"  # UTC+8, no DST
+
+DAY = DayConfig(
+    day_start="09:00",
+    day_end="22:00",
+    lunch="12:30",
+    dinner="19:00",
+    eat_duration_min=60,
+    commute_morning="08:00",
+    commute_evening="18:00",
+    commute_duration_min=45,
+)
 
 
 class FakeStructuredLLM:
@@ -115,14 +127,16 @@ def test_render_omits_dropped_section_when_empty():
 def test_generate_returns_structured_result_from_llm():
     canned = _result()
     llm = FakeLLM(canned)
-    out = generate_schedule(["wash dishes", "deep work 90m, morning"], date(2026, 6, 12), llm)
+    out = generate_schedule(
+        ["wash dishes", "deep work 90m, morning"], date(2026, 6, 12), llm, DAY, "wfh"
+    )
     assert out is canned
     assert llm.schema is TimeboxResult
 
 
 def test_generate_sends_tasks_verbatim_with_target_date_and_window():
     llm = FakeLLM(_result())
-    generate_schedule(["wash dishes", "call mom after 6pm"], date(2026, 6, 12), llm)
+    generate_schedule(["wash dishes", "call mom after 6pm"], date(2026, 6, 12), llm, DAY, "wfh")
     system_text = llm.structured.messages[0][1]
     human_text = llm.structured.messages[1][1]
     assert "2026-06-12" in system_text
@@ -130,26 +144,44 @@ def test_generate_sends_tasks_verbatim_with_target_date_and_window():
     assert human_text == "wash dishes\ncall mom after 6pm"
 
 
+def test_office_mode_injects_commute_blocks_and_anchors():
+    llm = FakeLLM(_result())
+    generate_schedule(["gym"], date(2026, 6, 12), llm, DAY, "office")
+    system_text = llm.structured.messages[0][1]
+    assert 'office' in system_text
+    assert "08:00" in system_text and "18:00" in system_text  # commute anchors
+    assert "45 minutes" in system_text  # commute duration
+    assert "12:30" in system_text and "19:00" in system_text  # lunch / dinner
+
+
+def test_wfh_mode_omits_commute_blocks():
+    llm = FakeLLM(_result())
+    generate_schedule(["gym"], date(2026, 6, 12), llm, DAY, "wfh")
+    system_text = llm.structured.messages[0][1]
+    assert "no commute" in system_text.lower()
+    assert "08:00" not in system_text and "18:00" not in system_text
+
+
 def test_single_failure_is_retried_transparently():
     canned = _result()
     llm = FakeLLM(RuntimeError("api hiccup"), canned)
-    assert generate_schedule(["wash dishes"], date(2026, 6, 12), llm) is canned
+    assert generate_schedule(["wash dishes"], date(2026, 6, 12), llm, DAY, "wfh") is canned
 
 
 def test_unparseable_output_counts_as_failure_and_is_retried():
     canned = _result()
     llm = FakeLLM(None, canned)  # with_structured_output yields None on parse failure
-    assert generate_schedule(["wash dishes"], date(2026, 6, 12), llm) is canned
+    assert generate_schedule(["wash dishes"], date(2026, 6, 12), llm, DAY, "wfh") is canned
 
 
 def test_double_failure_raises_and_same_tasks_can_be_retried():
     tasks = ["wash dishes", "gym 1h"]
     failing = FakeLLM(RuntimeError("down"), RuntimeError("still down"))
     with pytest.raises(ScheduleGenerationError):
-        generate_schedule(tasks, date(2026, 6, 12), failing)
+        generate_schedule(tasks, date(2026, 6, 12), failing, DAY, "wfh")
 
     # caller re-invokes with the identical task list and now succeeds
     canned = _result()
     recovered = FakeLLM(canned)
-    assert generate_schedule(tasks, date(2026, 6, 12), recovered) is canned
+    assert generate_schedule(tasks, date(2026, 6, 12), recovered, DAY, "wfh") is canned
     assert recovered.structured.messages[1][1] == "wash dishes\ngym 1h"

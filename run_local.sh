@@ -9,7 +9,7 @@ echo ""
 
 # First, make sure any existing webhook is deleted
 echo "Cleaning up any existing webhooks..."
-python3 -c "
+PYTHONPATH=src python3 -c "
 import asyncio
 from telegram import Bot
 from config import config
@@ -24,4 +24,4 @@ asyncio.run(delete_webhook())
 
 echo ""
 echo "Starting bot with polling..."
-python3 bot.py
+python3 src/bot.py
