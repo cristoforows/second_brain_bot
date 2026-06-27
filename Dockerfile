@@ -27,14 +27,17 @@ RUN useradd -m -u 1000 botuser && \
 # Copy Python dependencies from builder
 COPY --from=builder /root/.local /home/botuser/.local
 
-# Copy application code (whole src/ so new modules ship without editing this list)
+# Copy application code (whole src/ so new modules — timebox.py,
+# scheduler.py, calendar_handler.py, etc. — ship without editing this file)
 COPY --chown=botuser:botuser src/ .
 
 # Switch to non-root user
 USER botuser
 
-# Make sure scripts in .local are usable
-ENV PATH=/home/botuser/.local/bin:$PATH
+# Make sure scripts in .local are usable; keep runtime lean and unbuffered
+ENV PATH=/home/botuser/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 # Expose webhook port
 EXPOSE 8443

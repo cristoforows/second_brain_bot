@@ -18,6 +18,3 @@ cryptography>=42.0.0
 # Timebox scheduling LLM (OpenRouter via langchain)
 langchain>=0.3,<0.4
 langchain-openai>=0.3,<0.4
-
-# Testing
-pytest>=8.0,<9
