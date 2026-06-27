@@ -29,14 +29,16 @@ Before deployment, gather the following:
 
 1. **Telegram Bot Token**: Get from [@BotFather](https://t.me/botfather)
 2. **Google OAuth Credentials**: From [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   - Enable the **Google Drive API** and **Google Calendar API** in the project (the bot requests `drive.file` + `calendar.events`)
    - Client ID
    - Client Secret
    - Redirect URI (must be `https://your-domain.com/oauth/callback`)
-3. **PostgreSQL Database**: Supabase project or any PostgreSQL instance
+3. **OpenRouter API key**: From [openrouter.ai/keys](https://openrouter.ai/keys) — required; the bot exits on startup without it
+4. **PostgreSQL Database**: Supabase project or any PostgreSQL instance
    - Host, port, database name, user, password
    - Run the `user_tokens` table migration (see [Database Setup](#database-setup))
-4. **Domain Name**: For webhook and OAuth callbacks (must be HTTPS)
-5. **SSL Certificate**: Let's Encrypt or commercial certificate
+5. **Domain Name**: For webhook and OAuth callbacks (must be HTTPS)
+6. **SSL Certificate**: Let's Encrypt or commercial certificate
 
 ### Generate Encryption Key
 
@@ -83,11 +85,15 @@ DATABASE_HOST=your-db-host
 DATABASE_PORT=5432
 DATABASE_NAME=second_brain
 TOKEN_ENCRYPTION_KEY=your-generated-fernet-key
-DRIVE_FOLDER_NAME=second_brain_inbox.md
+DRIVE_FOLDER_NAME=second_brain_bot/
+# Required: OpenRouter API key for /timebox. The container exits on startup without it.
+OPENROUTER_API_KEY=your-openrouter-api-key
 # Optional: enable POST /api/send-message (leave unset to disable / return 503).
 # Generate with: openssl rand -hex 32
 OUTBOUND_API_SECRET=
 ```
+
+> The optional `/timebox` calendar publishing and day-shape settings (`TIMEBOX_CALENDAR_ID`, `TIMEBOX_DAY_START`, …) are listed in `.env.example`. Only `OPENROUTER_API_KEY` is required; the rest have sane defaults.
 
 #### Step 3: Build and Run
 
@@ -247,7 +253,7 @@ kubectl apply -f k8s/sealed-secret.yaml
 nano k8s/configmap.yaml
 # Update WEBHOOK_URL to your domain
 # Update WEBHOOK_PATH if needed (default: /webhook)
-# Update DRIVE_FOLDER_NAME if needed (default: second_brain_inbox.md)
+# Update DRIVE_FOLDER_NAME if needed (default: second_brain_bot/)
 ```
 
 #### Update Deployment (`k8s/deployment.yaml`)
@@ -518,7 +524,15 @@ docker push registry.digitalocean.com/myregistry/second-brain-bot:latest
 | `DATABASE_PORT` | Yes | — | PostgreSQL port |
 | `DATABASE_NAME` | Yes | — | PostgreSQL database name |
 | `TOKEN_ENCRYPTION_KEY` | Yes | — | Fernet key for encrypting stored OAuth tokens |
-| `DRIVE_FOLDER_NAME` | No | `second_brain_inbox.md` | Markdown filename in user's Google Drive |
+| `OPENROUTER_API_KEY` | Yes | — | OpenRouter API key for `/timebox`. **Startup fails without it** |
+| `DRIVE_FOLDER_NAME` | No | `second_brain_bot/` | Drive folder the bot creates; daily notes stored inside as `YYYY-MM-DD.md` |
+| `DAY_CUTOFF_HOUR` | No | `0` | Hour (0-23) before which messages file under the previous day; `0` disables |
+| `OUTBOUND_API_SECRET` | No | — | Shared secret for `POST /api/send-message`; unset disables it (503) |
+| `TIMEBOX_LLM_MODEL` | No | `deepseek/deepseek-v4-flash` | OpenRouter model for scheduling |
+| `TIMEBOX_TIMEZONE` | No | `Asia/Singapore` | IANA timezone for the target day |
+| `TIMEBOX_CUTOFF_HOUR` | No | `3` | Sessions before this local hour plan the current day, not tomorrow |
+| `TIMEBOX_CALENDAR_ID` | No | — | Dedicated calendar to publish the schedule into (never `primary`); unset → text only |
+| `TIMEBOX_DAY_START` / `_DAY_END` / `_LUNCH` / `_DINNER` / `_EAT_DURATION` / `_COMMUTE_MORNING` / `_COMMUTE_EVENING` / `_COMMUTE_DURATION` | No | see `.env.example` | Fixed daily anchors for the planner |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
 
 The Telegram webhook is registered at: `{WEBHOOK_URL}{WEBHOOK_PATH}/{BOT_TOKEN}`
@@ -789,6 +803,11 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
 
 #### 2. Connection Refused / 502 Bad Gateway
 
+First rule out the app **crashing at startup** (nothing is listening, so the proxy reports "connection refused"). Check the startup logs for a Python traceback before chasing network config:
+
+- **`ModuleNotFoundError`** → the image is missing a source module. The `Dockerfile` copies the whole `src/` directory; if you build a pinned image tag, rebuild and bump it (the running image can lag the code). The app must bind `0.0.0.0:8443` — a missing module means it never gets there.
+- **`OPENROUTER_API_KEY not found`** → the required env var is unset; the process exits immediately.
+
 ```bash
 # Check service
 kubectl get svc -n telegram-bot
@@ -823,6 +842,8 @@ curl https://your-domain.com/oauth/callback
 # Check logs for CSRF state errors (state cache is in-memory; pod restart during auth flow will fail)
 kubectl logs -f deployment/telegram-bot -n telegram-bot | grep "state"
 ```
+
+If the logs show `Failed to exchange OAuth code … Scope has changed from "…/drive.file" to "…/drive.file …/calendar.events"`, the user's existing token predates the calendar scope. Set `OAUTHLIB_RELAX_TOKEN_SCOPE=1` in the environment (oauthlib reads it at token-exchange time) and have the user re-run `/authenticate`.
 
 #### 5. SSL/TLS Certificate Issues
 
@@ -952,5 +973,5 @@ For issues or questions:
 
 ---
 
-**Last Updated**: 2026-03-11
-**Version**: 1.1.0
+**Last Updated**: 2026-06-27
+**Version**: 1.2.0

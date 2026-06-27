@@ -97,8 +97,11 @@ DATABASE_HOST=...
 DATABASE_PORT=5432
 DATABASE_NAME=second_brain
 TOKEN_ENCRYPTION_KEY=...   # generate below
-DRIVE_FOLDER_NAME=second_brain_inbox.md
+DRIVE_FOLDER_NAME=second_brain_bot/
+OPENROUTER_API_KEY=...    # required — /timebox; startup fails without it
 ```
+
+See `.env.example` for the optional `TIMEBOX_*` settings (LLM model, timezone, calendar ID, fixed daily anchors).
 
 Generate `TOKEN_ENCRYPTION_KEY`:
 ```bash
@@ -109,11 +112,13 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com)
 2. Create a new project (or select existing)
-3. Enable **Google Drive API**: APIs & Services → Library → Google Drive API → Enable
+3. Enable **Google Drive API** and **Google Calendar API**: APIs & Services → Library → enable both (Calendar is used by `/timebox`)
 4. Create OAuth 2.0 credentials: APIs & Services → Credentials → Create Credentials → OAuth client ID
    - Application type: **Web application**
    - Add authorized redirect URI: `https://your-ngrok-url/oauth/callback`
 5. Copy Client ID and Client Secret to `.env`
+
+The bot requests the `drive.file` and `calendar.events` scopes. Tokens minted before calendar support lack the calendar scope — re-run `/authenticate` to upgrade.
 
 ### 4. Database Setup (Supabase)
 
@@ -136,13 +141,17 @@ CREATE TABLE user_tokens (
 
 ## Webhook vs Polling
 
-The bot runs exclusively in **webhook mode**. There is no polling fallback.
+The bot has **two entrypoints that share the same handlers** (via `register_handlers`):
 
-**Webhook (webhook_server.py)**
-- Telegram pushes updates to your server via POST requests
-- Handles: new messages, edited messages
-- Required for edit detection
-- Requires public HTTPS URL
+**Polling (`src/bot.py`)** — local development
+- `python3 src/bot.py` (or `./run_local.sh`) long-polls Telegram; no public URL needed
+- Best for iterating locally without ngrok
+
+**Webhook (`src/webhook_server.py`)** — production
+- `python3 src/webhook_server.py` (or `./start_webhook.sh`) runs the Flask server; Telegram pushes updates via POST
+- Requires a public HTTPS URL (ngrok locally, or your deployed domain)
+
+> Telegram allows only **one** delivery method at a time. Switching to local polling deletes the production webhook, so the prod machine stops receiving updates until its webhook is re-set (it re-registers on next start). `run_local.sh` deletes the existing webhook for you before polling.
 
 ---
 
@@ -175,16 +184,30 @@ The OAuth CSRF state cache is in-memory. If the bot restarts between a user clic
 
 ---
 
+## Tests
+
+```bash
+pytest            # config is read from pytest.ini (pythonpath=src, testpaths=tests)
+```
+
+The suite covers the pure scheduling/calendar logic (`scheduler`, `calendar_handler`) and runs offline — no Telegram, Drive, or LLM calls.
+
+---
+
 ## Project Structure
 
 ```
 second_brain_bot/
 ├── src/
-│   ├── bot.py              # Command handlers (/start, /help, /authenticate, /status, /logout)
+│   ├── bot.py              # Command handlers + register_handlers; polling entrypoint (local)
 │   ├── webhook_server.py   # Flask server: /webhook/<token>, /oauth/callback, / (health), /api/send-message (outbound)
 │   ├── config.py           # Loads and validates environment variables
-│   ├── google_auth.py      # OAuth 2.0 flow, CSRF state, encrypted token storage (PostgreSQL)
-│   └── drive_handler.py    # Google Drive API: create/append/edit markdown files
+│   ├── google_auth.py      # OAuth 2.0 flow (drive.file + calendar.events), CSRF state, encrypted token storage (PostgreSQL)
+│   ├── drive_handler.py    # Google Drive API: create/append/edit markdown files
+│   ├── timebox.py          # /timebox conversation (collect tasks → schedule → publish)
+│   ├── scheduler.py        # Timebox target-date, LLM schedule generation, rendering
+│   └── calendar_handler.py # Google Calendar writes for the schedule
+├── tests/                  # pytest suite (scheduler, calendar_handler)
 ├── k8s/                    # Kubernetes manifests
 ├── Dockerfile              # Multi-stage build (python:3.11-slim)
 ├── docker-compose.yml      # Local/small-scale Docker deployment

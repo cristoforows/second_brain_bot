@@ -4,121 +4,106 @@
 
 This bot collects data from Telegram chats and dumps it into Google Drive for later processing by a specialized second brain service that will filter and group the data.
 
+> **Note:** Source code now lives under `src/` (not the repo root). Paths
+> below are relative to `src/` unless stated otherwise. The forward-looking
+> "Next Steps", "Phase", and "TODO" sections further down predate the current
+> implementation and are kept only as historical design notes — trust this
+> section and the "Key Files" list over them.
+
 ## Current State
 
 ### What's Implemented
-- Basic Telegram bot skeleton using `python-telegram-bot` library
-- Configuration management with environment variables (.env)
-- Logging infrastructure
-- Command handlers (/start, /help)
-- Message echo functionality (placeholder for data collection)
-- Error handling
+- Telegram bot using `python-telegram-bot` (v22) with async handlers
+- **Two run modes** (share the same handlers via `register_handlers`):
+  - `python src/bot.py` → **polling** mode for local development (no public URL)
+  - `python src/webhook_server.py` → **Flask webhook** server for production (Fly.dev)
+- Google OAuth 2.0 flow with scopes `drive.file` + `calendar.events`
+- Authentication gate: unauthenticated users are prompted to `/authenticate`
+- Per-user token storage in **PostgreSQL** (encrypted at rest via Fernet), with
+  automatic token refresh
+- Commands: `/start`, `/help`, `/authenticate`, `/status`, `/logout`, `/timebox`
+- Message collection → per-day markdown files in the user's Google Drive
+  (create / append / edit / delete), with a configurable day-cutoff hour
+- `/timebox`: an LLM (OpenRouter via LangChain) turns next-day tasks into a
+  timeboxed Schedule, optionally published to a dedicated Google Calendar
+- Outbound `POST /api/send-message` endpoint (shared-secret gated)
 
-### What's NOT Implemented
-- **Webhook Configuration**: Bot uses polling; needs to switch to webhooks
-- **Google Drive Integration**: No Google Drive API integration yet
-- **Google OAuth 2.0**: Need to implement OAuth flow for Drive access
-- **Authentication Gate**: Bot should refuse to work until user authenticates
-- **`/authenticate` Command**: Command to initiate OAuth flow
-- **Markdown File Management**: Creating, appending, editing markdown files in Drive
-- **Message ID Tracking**: Storing and finding messages by ID for edit operations
-- **Edit Message Handler**: Detecting and processing edited messages from webhooks
-- **Token Storage**: Per-user OAuth token storage and management
-- **Token Refresh**: Automatic refresh of expired tokens
+### Known gaps / rough edges
+- `.env` files created before the `/timebox` feature lack `OPENROUTER_API_KEY`,
+  which is **required** — `config.py` calls `sys.exit(1)` without it
+- The OAuth CSRF state cache is in-memory, so a process restart mid-`/authenticate`
+  fails the callback (see README "Future Improvements" for the durable options)
 
 ## Architecture Overview
 
 ```
-Telegram Webhook → Bot (webhook receiver)
-    ↓                   
-Message Handler
-    ├─→ Check if user authenticated with Google Drive
-    │   ├─→ NO: Send authentication prompt
-    │   └─→ YES: Continue processing
+Telegram ──(prod: webhook POST)──▶ webhook_server.py (Flask)
+         └─(local: long polling)──▶ bot.py
+                         │ both call register_handlers()
+                         ▼
+                 Message / command handlers
+    ├─→ Auth gate: user has valid Google token in Postgres?
+    │   ├─→ NO: prompt /authenticate
+    │   └─→ YES: continue
     ↓
-Extract message ID + content
-    ↓
-Google Drive API (OAuth 2.0)
-    ├─→ Find/Create user's markdown file
-    ├─→ Append new message
-    └─→ Update existing message (if edited)
-    ↓
-Markdown file in Google Drive
-    ↓
-[External Service - handles filtering/grouping]
+    ├─ text message ──▶ drive_handler ──▶ per-day markdown file in Google Drive
+    └─ /timebox ──▶ timebox.py ──▶ OpenRouter LLM ──▶ Schedule
+                                      └─▶ calendar_handler ──▶ Google Calendar
 ```
 
 ### Key Architectural Decisions
+- **Polling for local, webhook for prod** — same handler set, two entrypoints.
+  Telegram allows only one delivery method at a time, so switching to local
+  polling requires deleting the prod webhook first (and restoring it after).
+- **Auth-first** — bot is non-functional until the user completes OAuth.
+- **Postgres token storage** (not file-based) — tokens encrypted with Fernet.
 
-**Step 1: Webhook-based Message Reception**
-- Bot uses webhooks (not polling) to receive messages
-- More efficient and scalable than polling
-- Requires public URL/server to receive webhook POSTs
+## Key Files (under `src/`)
 
-**Step 2: Authentication-First Approach**
-- Bot is completely non-functional until user authenticates with Google Drive
-- Any message from unauthenticated user → prompt to use /authenticate
-- /authenticate command initiates Google OAuth 2.0 flow
-- Only after successful OAuth can bot collect messages
+### bot.py
+- Local-dev entrypoint: `main()` runs `application.run_polling(...)`
+- `register_handlers(application)` — the single source of handler registration,
+  reused by the webhook server. Order matters (commands → `/timebox`
+  conversation → catch-all text → error handler)
+- `store_message_on_drive` handles both new and edited messages;
+  `handle_deleted_message` removes them from Drive
 
-## Key Files
+### config.py
+- Loads/validates env vars: Telegram token, webhook URL/port/path, Google OAuth
+  creds, `DATABASE_*`, `TOKEN_ENCRYPTION_KEY`, Drive/day-cutoff, OpenRouter +
+  timebox/calendar settings. Hard-exits if required vars are missing
 
-### bot.py (lines 1-152)
-- Main bot application
-- Entry point: `main()` function
-- Current handlers: `/start`, `/help`, and text message echo
-- Uses `telegram.ext.Application` for bot framework
-- **Needs to change**:
-  - Switch from `run_polling()` to webhook setup
-  - Add authentication gate to all handlers
-  - Add `/authenticate` command handler
-  - Replace echo handler with message collection + Drive append
-  - Add edited_message handler
+### google_auth.py
+- `class TokenStorage` backed by a `psycopg2` connection pool:
+  `get_user_token`, `is_authenticated`, `delete_user_token`, save/refresh
+- `SCOPES = [drive.file, calendar.events]`
+- `generate_auth_url(...)`, `handle_oauth_callback(...)`, `has_calendar_scope(...)`
 
-### config.py (lines 1-86)
-- Handles environment variable loading
-- Validates bot token format
-- Sets up logging configuration
-- **Needs to add**:
-  - Google OAuth credentials (client_id, client_secret, redirect_uri)
-  - Webhook URL and port
-  - Drive file settings
+### drive_handler.py
+- `get_drive_service`, `get_or_create_folder`, `get_or_create_markdown_file`
+  (per-day file honoring `day_cutoff_hour`), `append_message`,
+  `update_message`, `delete_message`
 
-### google_auth.py (TO CREATE)
-- Handle Google OAuth 2.0 flow
-- Functions:
-  - `generate_auth_url(user_id)` → returns OAuth URL for user
-  - `handle_oauth_callback(code, user_id)` → exchange code for tokens
-  - `get_user_token(user_id)` → load user's stored token
-  - `is_authenticated(user_id)` → check if user has valid token
-  - `refresh_token(user_id)` → refresh expired token
+### timebox.py
+- `build_timebox_handler()` → the `/timebox` ConversationHandler. Collects tasks,
+  calls the OpenRouter LLM to build the Schedule, replies and (optionally) writes
+  it to the Target Calendar. See CONTEXT.md for canonical terms
 
-### drive_handler.py (TO CREATE)
-- Manage Google Drive operations
-- Functions:
-  - `get_drive_service(user_id)` → initialize Drive API client with user token
-  - `get_or_create_markdown_file(user_id)` → find existing or create new
-  - `append_message(user_id, message_id, content, timestamp)` → add message
-  - `update_message(user_id, message_id, new_content)` → edit existing message
-  - `_parse_markdown_for_message(content, message_id)` → find message in markdown
-  - `_format_message_block(message_id, content, timestamp)` → create markdown block
+### calendar_handler.py
+- Google Calendar writes for the Schedule: tag/list/clear and per-item event creation
 
-### webhook_server.py (TO CREATE - if using separate server)
-- Flask or FastAPI app to receive webhooks
-- Endpoints:
-  - `POST /webhook/{token}` → receive Telegram updates
-  - `GET /oauth/callback` → handle OAuth redirect
-- Pass updates to bot handlers
+### scheduler.py
+- Scheduling/slot logic supporting `/timebox` (fixed blocks, office/WFH mode)
 
-### tokens/ (directory, TO CREATE)
-- Store user OAuth tokens
-- One file per user: `{user_id}.json`
-- Format: `{access_token, refresh_token, expiry, scopes}`
-- **Add to .gitignore**
+### webhook_server.py
+- Production entrypoint: Flask app. `POST /webhook/<token>` (Telegram updates,
+  incl. deleted-message handling), `GET /oauth/callback` (OAuth redirect),
+  `POST /api/send-message` (shared-secret outbound). Builds the bot Application
+  and calls `register_handlers`
 
-### requirements.txt
-- Current: `python-telegram-bot`, `python-dotenv`
-- **Needs**: Google Drive libraries + webhook server (Flask/FastAPI)
+### Token storage
+- PostgreSQL (`DATABASE_*` in `.env`), one row per user, encrypted via Fernet
+  (`TOKEN_ENCRYPTION_KEY`). The legacy `tokens/` directory is unused
 
 ## Authentication Flows
 

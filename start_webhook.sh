@@ -14,4 +14,4 @@ echo "1. Updated WEBHOOK_URL in .env with your public URL (ngrok URL for local d
 echo "2. Started ngrok if running locally: ngrok http 8443"
 echo ""
 
-python3 webhook_server.py
+python3 src/webhook_server.py

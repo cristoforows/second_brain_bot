@@ -5,6 +5,7 @@ Receives webhook updates from Telegram and processes them.
 """
 
 import logging
+import os
 from flask import Flask, request, Response, jsonify
 from telegram import Update
 from telegram.error import BadRequest, Forbidden, TelegramError
@@ -214,7 +215,7 @@ async def set_webhook():
     try:
         await bot_app.bot.set_webhook(
             url=webhook_url,
-            allowed_updates=["message", "edited_message", "message_delete"]
+            allowed_updates=["message", "edited_message", "message_delete", "callback_query"]
         )
 
         # Verify webhook was set
@@ -258,6 +259,11 @@ def main():
 
         # Store token_storage in bot_data so handlers can access it
         bot_app.bot_data['token_storage'] = token_storage
+
+        # Flag local runs so /status shows the "--local" marker, mirroring
+        # bot.py's polling entrypoint. Fly injects FLY_APP_NAME on the prod
+        # machine; it's absent when running webhook_server.py locally.
+        bot_app.bot_data['is_local'] = 'FLY_APP_NAME' not in os.environ
 
         # Initialize the bot application and set webhook
         asyncio.run_coroutine_threadsafe(bot_app.initialize(), event_loop).result(timeout=10)

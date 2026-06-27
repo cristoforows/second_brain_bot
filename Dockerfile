@@ -27,12 +27,8 @@ RUN useradd -m -u 1000 botuser && \
 # Copy Python dependencies from builder
 COPY --from=builder /root/.local /home/botuser/.local
 
-# Copy application code
-COPY --chown=botuser:botuser src/bot.py .
-COPY --chown=botuser:botuser src/webhook_server.py .
-COPY --chown=botuser:botuser src/config.py .
-COPY --chown=botuser:botuser src/google_auth.py .
-COPY --chown=botuser:botuser src/drive_handler.py .
+# Copy application code (whole src/ so new modules ship without editing this list)
+COPY --chown=botuser:botuser src/ .
 
 # Switch to non-root user
 USER botuser
