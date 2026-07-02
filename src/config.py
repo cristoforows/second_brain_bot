@@ -50,7 +50,12 @@ class Config:
         # Timebox -> Google Calendar publishing
         self.timebox_calendar_id = self._get_timebox_calendar_id()
         self.timebox_day_start = self._get_time_of_day('TIMEBOX_DAY_START', '09:00')
-        self.timebox_day_end = self._get_time_of_day('TIMEBOX_DAY_END', '22:00')
+        self.timebox_day_end = self._get_time_of_day('TIMEBOX_DAY_END', '23:59')
+        # Work window (office/wfh only): the narrower band inside the day where
+        # work tasks live. Soft end is preferred; hard end is never crossed.
+        self.timebox_work_start = self._get_time_of_day('TIMEBOX_WORK_START', '09:00')
+        self.timebox_work_end = self._get_time_of_day('TIMEBOX_WORK_END', '17:00')
+        self.timebox_work_end_hard = self._get_time_of_day('TIMEBOX_WORK_END_HARD', '18:00')
         self.timebox_lunch = self._get_time_of_day('TIMEBOX_LUNCH', '12:30')
         self.timebox_dinner = self._get_time_of_day('TIMEBOX_DINNER', '19:00')
         self.timebox_eat_duration = self._get_duration_minutes('TIMEBOX_EAT_DURATION', 60)
