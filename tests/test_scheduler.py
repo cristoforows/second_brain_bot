@@ -25,6 +25,9 @@ DAY = DayConfig(
     commute_morning="08:00",
     commute_evening="18:00",
     commute_duration_min=45,
+    work_start="09:00",
+    work_end="17:00",
+    work_end_hard="18:00",
 )
 
 
@@ -112,7 +115,7 @@ def test_render_includes_dropped_section_with_reasons():
         _result(dropped=[DroppedTask(task="organize garage", reason="no time left in the day")]),
         date(2026, 6, 12),
     )
-    assert "Dropped:" in text
+    assert "couldn't be scheduled" in text
     assert "organize garage" in text and "no time left in the day" in text
 
 
@@ -159,7 +162,26 @@ def test_wfh_mode_omits_commute_blocks():
     generate_schedule(["gym"], date(2026, 6, 12), llm, DAY, "wfh")
     system_text = llm.structured.messages[0][1]
     assert "no commute" in system_text.lower()
-    assert "08:00" not in system_text and "18:00" not in system_text
+    # morning commute anchor absent (18:00 now legitimately appears as the work
+    # window's hard end)
+    assert "08:00" not in system_text
+
+
+def test_working_modes_include_work_window_and_focus_rules():
+    llm = FakeLLM(_result())
+    generate_schedule(["email"], date(2026, 6, 12), llm, DAY, "wfh")
+    system_text = llm.structured.messages[0][1]
+    assert "Work Focus" in system_text and "Personal Focus" in system_text
+    assert "17:00" in system_text  # work-window soft end
+
+
+def test_nonworking_mode_omits_work_window_and_commute():
+    llm = FakeLLM(_result())
+    generate_schedule(["read a book"], date(2026, 6, 12), llm, DAY, "nonworking")
+    system_text = llm.structured.messages[0][1]
+    assert "Non-working day" in system_text
+    assert "Work Focus" not in system_text
+    assert "17:00" not in system_text  # work window not injected
 
 
 def test_single_failure_is_retried_transparently():
