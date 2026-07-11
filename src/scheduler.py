@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _MAX_ATTEMPTS = 2  # one automatic retry
 
-Mode = Literal["office", "wfh"]
+Mode = Literal["office", "wfh", "nonworking"]
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,8 @@ class DayConfig:
 
     Times are HH:MM (24h); durations are minutes. The LLM owns placement and
     may override any of these when a user task clearly states a different time.
+    The work window (work_start/work_end/work_end_hard) only applies on working
+    days (office/wfh); it is ignored on non-working days.
     """
 
     day_start: str
@@ -39,6 +41,9 @@ class DayConfig:
     commute_morning: str
     commute_evening: str
     commute_duration_min: int
+    work_start: str
+    work_end: str
+    work_end_hard: str
 
 
 # The prompt is expected to be tuned after a few days of real use — keep it here.
@@ -63,10 +68,32 @@ with the user's task instead of emitting both.
 (e.g. "morning", "after 6pm"). Honor them exactly.
 - Estimate a sensible duration for any task that has none.
 - Time slots must not overlap. Short breathing gaps between tasks are fine.
+- Use 24-hour HH:MM times.
+{workday_rules}\
 - If everything cannot fit in the day, drop the least important / least \
 time-pressured tasks until the plan fits. Report every dropped task with a \
 one-line reason. Never ask the user questions.
-- Use 24-hour HH:MM times.
+"""
+
+# Working-day boundaries + focus-slot filling. Injected for office/wfh only;
+# non-working days get an empty string here.
+_WORKDAY_RULES = """\
+- Classify each task as work (job/professional) or non-work (personal, errands, \
+leisure) by inferring from its wording.
+- Work tasks belong in the work window {work_start}-{work_end}. You may extend \
+to {work_end_hard} only when necessary, but avoid the {work_end}-{work_end_hard} \
+hour when you can. Never schedule work past {work_end_hard}; if work tasks cannot \
+fit by {work_end_hard}, drop the least important and report them.
+- Non-work tasks may take at most 60 minutes TOTAL inside the work window \
+{work_start}-{work_end}; schedule any remaining non-work tasks after {work_end}.
+- Leave no empty stretches in the day — fill every gap with placeholder focus \
+slots the user decides on the day itself:
+  - Between {work_start} and {work_end}, fill gaps with 90-minute "Work Focus" \
+slots separated by 15-minute "Break" slots.
+  - Between {work_end} and 23:30, fill gaps with 90-minute "Personal Focus" \
+slots separated by 15-minute "Break" slots.
+  Keep these focus slots even when there is nothing else to schedule. Never \
+create a focus slot after 23:30.
 """
 
 _COMMUTE_OFFICE = (
@@ -75,7 +102,11 @@ _COMMUTE_OFFICE = (
     "- Evening commute at {commute_evening} for {commute_duration} minutes "
     '(task name: "Commute").'
 )
-_COMMUTE_WFH = "- Working from home today: no commute blocks."
+_MODE_BLOCK = {
+    "office": _COMMUTE_OFFICE,
+    "wfh": "- Working from home today: no commute blocks.",
+    "nonworking": "- Non-working day (day off): no commute blocks.",
+}
 
 
 class ScheduleItem(BaseModel):
@@ -125,14 +156,20 @@ class ScheduleGenerationError(Exception):
 
 def _build_system_prompt(target_date: date, day: DayConfig, mode: Mode) -> str:
     """Render the planner system prompt for the given day config and mode."""
-    if mode == "office":
-        commute_block = _COMMUTE_OFFICE.format(
-            commute_morning=day.commute_morning,
-            commute_evening=day.commute_evening,
-            commute_duration=day.commute_duration_min,
-        )
+    commute_block = _MODE_BLOCK[mode].format(
+        commute_morning=day.commute_morning,
+        commute_evening=day.commute_evening,
+        commute_duration=day.commute_duration_min,
+    )
+    # Work-window boundaries and focus filling apply on working days only.
+    if mode == "nonworking":
+        workday_rules = ""
     else:
-        commute_block = _COMMUTE_WFH
+        workday_rules = _WORKDAY_RULES.format(
+            work_start=day.work_start,
+            work_end=day.work_end,
+            work_end_hard=day.work_end_hard,
+        )
     return _SYSTEM_PROMPT.format(
         target_date=target_date.isoformat(),
         weekday=target_date.strftime("%A"),
@@ -143,6 +180,7 @@ def _build_system_prompt(target_date: date, day: DayConfig, mode: Mode) -> str:
         dinner=day.dinner,
         eat_duration=day.eat_duration_min,
         commute_block=commute_block,
+        workday_rules=workday_rules,
     )
 
 
@@ -183,9 +221,16 @@ def render_schedule(result: TimeboxResult, target_date: date) -> str:
         if item.note:
             line += f" ({item.note})"
         lines.append(line)
-    if result.dropped:
-        lines.append("")
-        lines.append("Dropped:")
-        for item in result.dropped:
-            lines.append(f"- {item.task} — {item.reason}")
+    lines.extend(dropped_notice_lines(result))
     return "\n".join(lines)
+
+
+def dropped_notice_lines(result: TimeboxResult) -> list[str]:
+    """Render the shared 'couldn't be scheduled' notice, or nothing if all fit."""
+    if not result.dropped:
+        return []
+    n = len(result.dropped)
+    lines = ["", f"⚠️ {n} task(s) couldn't be scheduled (ran out of time):"]
+    for item in result.dropped:
+        lines.append(f"- {item.task} — {item.reason}")
+    return lines

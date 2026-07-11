@@ -32,11 +32,13 @@ import scheduler
 
 logger = logging.getLogger(__name__)
 
-CHOOSING_MODE, COLLECTING, CONFIRM_REDO = range(3)
+CHOOSING_MODE, COLLECTING, CONFIRM_REDO, ASK_START = range(4)
 SESSION_TIMEOUT_SECONDS = 30 * 60
 _TASKS_KEY = "timebox_tasks"
 _MODE_KEY = "timebox_mode"
 _DATE_KEY = "timebox_date"
+_START_KEY = "timebox_start"
+_DEFAULT_START = "09:00"
 
 _COLLECT_PROMPT = (
     "Send tomorrow's tasks, one per message — optionally with a duration or "
@@ -48,10 +50,13 @@ _COLLECT_PROMPT = (
 )
 
 
-def _day_config() -> scheduler.DayConfig:
-    """Build the planner's fixed-block config from environment settings."""
+def _day_config(start_override: str | None = None) -> scheduler.DayConfig:
+    """Build the planner's fixed-block config from environment settings.
+
+    start_override replaces the day's start time (used by non-working days,
+    where the user picks their own start)."""
     return scheduler.DayConfig(
-        day_start=config.timebox_day_start,
+        day_start=start_override or config.timebox_day_start,
         day_end=config.timebox_day_end,
         lunch=config.timebox_lunch,
         dinner=config.timebox_dinner,
@@ -59,7 +64,49 @@ def _day_config() -> scheduler.DayConfig:
         commute_morning=config.timebox_commute_morning,
         commute_evening=config.timebox_commute_evening,
         commute_duration_min=config.timebox_commute_duration,
+        work_start=config.timebox_work_start,
+        work_end=config.timebox_work_end,
+        work_end_hard=config.timebox_work_end_hard,
     )
+
+
+def _parse_time(text: str) -> str | None:
+    """Parse a 24-hour time into "HH:MM", or None if unreadable.
+
+    Accepts compact digits (900->09:00, 1300->13:00, 0930->09:30) and colon
+    form (9:00, 13:30). Rejects fewer than 3 digits (ambiguous) and any
+    out-of-range hour/minute."""
+    s = text.strip()
+    if ":" in s:
+        parts = s.split(":")
+        if len(parts) != 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+            return None
+        hour, minute = int(parts[0]), int(parts[1])
+    elif s.isdigit() and 3 <= len(s) <= 4:
+        hour, minute = int(s[:-2]), int(s[-2:])
+    else:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+async def _begin_collection(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start task collection. On a non-working day, first ask for a start time."""
+    context.user_data[_TASKS_KEY] = []
+    mode = context.user_data.get(_MODE_KEY, "wfh")
+    if mode == "nonworking":
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(f"Start {_DEFAULT_START}", callback_data="start:default")]]
+        )
+        await query.edit_message_text(
+            "Non-working day — what time do you want to start? Send a 24-hour "
+            "time like 900 or 1330, or tap the button for the default.",
+            reply_markup=keyboard,
+        )
+        return ASK_START
+    await query.edit_message_text(f"Mode: {mode}. {_COLLECT_PROMPT}")
+    return COLLECTING
 
 
 async def start_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -75,13 +122,16 @@ async def start_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
 
     keyboard = InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton("🏢 Office", callback_data="mode:office"),
-            InlineKeyboardButton("🏠 WFH", callback_data="mode:wfh"),
-        ]]
+        [
+            [
+                InlineKeyboardButton("🏢 Office", callback_data="mode:office"),
+                InlineKeyboardButton("🏠 WFH", callback_data="mode:wfh"),
+            ],
+            [InlineKeyboardButton("🌴 Day off", callback_data="mode:nonworking")],
+        ]
     )
     await update.message.reply_text(
-        "Timebox session — where are you working today?", reply_markup=keyboard
+        "Timebox session — what kind of day is tomorrow?", reply_markup=keyboard
     )
     logger.info(f"Timebox session started for user {user_id}")
     return CHOOSING_MODE
@@ -149,9 +199,7 @@ async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         )
         return CONFIRM_REDO
 
-    context.user_data[_TASKS_KEY] = []
-    await query.edit_message_text(f"Mode: {mode}. {_COLLECT_PROMPT}")
-    return COLLECTING
+    return await _begin_collection(query, context)
 
 
 async def confirm_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -163,9 +211,28 @@ async def confirm_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await query.edit_message_text("Keeping your existing schedule. Session ended.")
         return ConversationHandler.END
 
-    context.user_data[_TASKS_KEY] = []
-    mode = context.user_data.get(_MODE_KEY, "wfh")
-    await query.edit_message_text(f"Redoing. Mode: {mode}. {_COLLECT_PROMPT}")
+    return await _begin_collection(query, context)
+
+
+async def start_from_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle the default-start button on a non-working day."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data[_START_KEY] = _DEFAULT_START
+    await query.edit_message_text(f"Starting at {_DEFAULT_START}. {_COLLECT_PROMPT}")
+    return COLLECTING
+
+
+async def set_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Parse the user's free-text start time; re-ask on unreadable input."""
+    parsed = _parse_time(update.message.text)
+    if parsed is None:
+        await update.message.reply_text(
+            "Couldn't read that — send a 24-hour time like 900 or 1330."
+        )
+        return ASK_START
+    context.user_data[_START_KEY] = parsed
+    await update.message.reply_text(f"Starting at {parsed}. {_COLLECT_PROMPT}")
     return COLLECTING
 
 
@@ -201,11 +268,7 @@ def _render_published(result, write_results, target_date: date) -> str:
     else:
         lines.append(f"Added {total} events to your calendar.")
 
-    if result.dropped:
-        lines.append("")
-        lines.append("Dropped:")
-        for item in result.dropped:
-            lines.append(f"- {item.task} — {item.reason}")
+    lines.extend(scheduler.dropped_notice_lines(result))
     return "\n".join(lines)
 
 
@@ -224,8 +287,9 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     try:
         # to_thread: the langchain call is sync; don't block the event loop
+        day = _day_config(context.user_data.get(_START_KEY))
         result = await asyncio.to_thread(
-            scheduler.generate_schedule, tasks, target_date, _llm(), _day_config(), mode
+            scheduler.generate_schedule, tasks, target_date, _llm(), day, mode
         )
     except scheduler.ScheduleGenerationError:
         logger.error(f"Schedule generation failed twice for user {user_id}")
@@ -239,6 +303,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # No calendar configured: reply text only and end.
     if not config.timebox_calendar_id:
         context.user_data.pop(_TASKS_KEY, None)
+        context.user_data.pop(_START_KEY, None)
         await update.message.reply_text(scheduler.render_schedule(result, target_date))
         return ConversationHandler.END
 
@@ -279,6 +344,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return COLLECTING
 
     context.user_data.pop(_TASKS_KEY, None)
+    context.user_data.pop(_START_KEY, None)
     await update.message.reply_text(reply)
     logger.info(
         f"Timebox schedule for {target_date} published for user {user_id}: "
@@ -290,6 +356,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /cancel - abort the session and clear the buffer."""
     context.user_data.pop(_TASKS_KEY, None)
+    context.user_data.pop(_START_KEY, None)
     await update.message.reply_text("Timebox session cancelled.")
     return ConversationHandler.END
 
@@ -297,6 +364,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def expire(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Notify the user when the session times out; the buffer is discarded."""
     context.user_data.pop(_TASKS_KEY, None)
+    context.user_data.pop(_START_KEY, None)
     if update.effective_message:
         await update.effective_message.reply_text(
             "Timebox session expired after 30 minutes of inactivity. "
@@ -319,6 +387,11 @@ def build_timebox_handler() -> ConversationHandler:
         states={
             CHOOSING_MODE: [CallbackQueryHandler(choose_mode, pattern=r"^mode:")],
             CONFIRM_REDO: [CallbackQueryHandler(confirm_redo, pattern=r"^redo:")],
+            ASK_START: [
+                CallbackQueryHandler(start_from_button, pattern=r"^start:"),
+                CommandHandler("cancel", cancel),
+                MessageHandler(task_message, set_start_time),
+            ],
             COLLECTING: [
                 CommandHandler("done", done),
                 CommandHandler("cancel", cancel),
