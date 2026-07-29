@@ -1,58 +1,35 @@
-"""/search: keyword search across the captured daily notes in Drive.
+"""/search: agentic keyword search over the user's knowledge vault in Drive.
 
-Thin Telegram glue. The matching/parsing helpers are pure functions so they
-can be unit-tested without Drive. Scans the most recent daily files only, so a
-long history stays cheap.
+Thin Telegram glue only. All navigation/answering judgment lives in
+vault_agent, which lets the LLM walk the vault's folder tree itself via
+tools — the vault is written by the external second-brain service in a
+nested, cross-linked structure that a flat scan can't handle.
 """
 
+import asyncio
 import logging
-import re
+from functools import lru_cache
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import config
 import drive_handler
+import scheduler
+import vault_agent
 
 logger = logging.getLogger(__name__)
 
-_BLOCK_RE = re.compile(r"<!-- msg_id: \d+ -->\n")
-_DAILY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.md$")
-
-_MAX_FILES = 60      # how many recent daily files to scan
-_MAX_HITS = 20       # how many matches to show
-_SNIPPET_LEN = 160   # per-hit snippet length
 _MAX_REPLY = 3900
 
 
-def parse_blocks(content: str) -> list[str]:
-    """Captured note texts in order, stripped of the msg_id markers."""
-    parts = _BLOCK_RE.split(content)
-    return [p.strip() for p in parts[1:] if p.strip()]
-
-
-def find_matches(content: str, query: str) -> list[str]:
-    """Notes in `content` that contain `query` (case-insensitive substring)."""
-    q = query.lower()
-    return [n for n in parse_blocks(content) if q in n.lower()]
-
-
-def _snippet(note: str) -> str:
-    """Collapse a note to a single trimmed line for compact display."""
-    one_line = " ".join(note.split())
-    if len(one_line) > _SNIPPET_LEN:
-        one_line = one_line[:_SNIPPET_LEN].rstrip() + "…"
-    return one_line
-
-
-def _date_of(file_name: str) -> str:
-    """The YYYY-MM-DD date encoded in a daily file name, or the raw name."""
-    m = _DAILY_RE.match(file_name)
-    return m.group(1) if m else file_name
+@lru_cache(maxsize=1)
+def _llm():
+    return scheduler.create_llm(api_key=config.openrouter_api_key, model=config.llm_model)
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /search <query> - find captured notes matching the query."""
+    """Handle /search <query> - agentic search over the user's knowledge vault."""
     token_storage = context.bot_data.get("token_storage")
     user_id = update.effective_user.id
     if not token_storage or not token_storage.is_authenticated(user_id):
@@ -73,35 +50,34 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    folder_id = drive_handler.get_or_create_folder(service, config.drive_folder_name)
-    if not folder_id:
-        await update.message.reply_text(
-            "Couldn't reach your Drive folder — please try again later."
+    if config.knowledge_folder_id:
+        folder_id = config.knowledge_folder_id
+        if not drive_handler.verify_folder(service, folder_id):
+            await update.message.reply_text(
+                "The configured knowledge folder (KNOWLEDGE_FOLDER_ID) isn't "
+                "reachable — check the id and that it's shared with this account."
+            )
+            return
+    else:
+        folder_id = drive_handler.find_folder(service, config.knowledge_folder_name)
+        if not folder_id:
+            await update.message.reply_text(
+                "No knowledge folder found yet — it's created once the second-brain "
+                "service has processed some of your notes."
+            )
+            return
+
+    try:
+        # to_thread: the langchain call is sync; don't block the event loop
+        answer = await asyncio.to_thread(
+            vault_agent.run_agent, _llm(), service, folder_id, query
         )
+    except vault_agent.SearchAgentError:
+        logger.error(f"Search agent failed for user {user_id}")
+        await update.message.reply_text("Search failed — please try again.")
         return
 
-    files = drive_handler.list_markdown_files(service, folder_id)
-    # Newest day first; cap the scan so a long history stays cheap.
-    files = sorted(files, key=lambda f: f.get("name", ""), reverse=True)[:_MAX_FILES]
-
-    hits: list[tuple[str, str]] = []  # (date, snippet)
-    for f in files:
-        if len(hits) >= _MAX_HITS:
-            break
-        content = drive_handler.read_file(service, f["id"]) or ""
-        for note in find_matches(content, query):
-            hits.append((_date_of(f.get("name", "")), _snippet(note)))
-            if len(hits) >= _MAX_HITS:
-                break
-
-    if not hits:
-        await update.message.reply_text(f'No notes found for "{query}".')
-        return
-
-    lines = [f'🔎 {len(hits)} match(es) for "{query}":', ""]
-    for d, snip in hits:
-        lines.append(f"[{d}] {snip}")
-    reply = "\n".join(lines)
-    if len(reply) > _MAX_REPLY:
-        reply = reply[:_MAX_REPLY] + "\n…(truncated)"
-    await update.message.reply_text(reply)
+    if len(answer) > _MAX_REPLY:
+        answer = answer[:_MAX_REPLY] + "\n…(truncated)"
+    await update.message.reply_text(answer)
+    logger.info(f'Search for user {user_id} completed: "{query}"')

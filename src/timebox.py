@@ -265,7 +265,7 @@ async def edit_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 @lru_cache(maxsize=1)
 def _llm():
     return scheduler.create_llm(
-        api_key=config.openrouter_api_key, model=config.timebox_llm_model
+        api_key=config.openrouter_api_key, model=config.llm_model
     )
 
 

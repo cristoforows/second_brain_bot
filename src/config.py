@@ -36,14 +36,18 @@ class Config:
 
         # Google Drive settings
         self.drive_folder_name = self._get_drive_folder_name()
+        self.knowledge_folder_name = self._get_knowledge_folder_name()
+        self.knowledge_folder_id = self._get_knowledge_folder_id()
         self.day_cutoff_hour = self._get_day_cutoff_hour()
 
         # Outbound send-message endpoint
         self.outbound_api_secret = self._get_outbound_api_secret()
 
-        # Timebox (/timebox LLM scheduling)
+        # OpenRouter LLM, shared by /timebox and /search
         self.openrouter_api_key = self._get_openrouter_api_key()
-        self.timebox_llm_model = self._get_timebox_llm_model()
+        self.llm_model = self._get_llm_model()
+
+        # Timebox (/timebox LLM scheduling)
         self.timebox_timezone = self._get_timebox_timezone()
         self.timebox_cutoff_hour = self._get_timebox_cutoff_hour()
 
@@ -180,6 +184,25 @@ class Config:
         """Get Drive markdown file name."""
         return os.getenv('DRIVE_FOLDER_NAME', 'second_brain_bot/')
 
+    def _get_knowledge_folder_name(self) -> str:
+        """Get the Drive folder name where the second-brain service writes
+        processed/filtered knowledge notes. Distinct from `drive_folder_name`,
+        which holds the raw captured-message inbox. /search reads from here.
+
+        Used only when KNOWLEDGE_FOLDER_ID is unset. Name lookup searches by
+        name across all of Drive (no parent scoping), so nesting depth doesn't
+        matter — but it breaks if multiple folders share the name.
+        """
+        return os.getenv('KNOWLEDGE_FOLDER_NAME', 'SecondBrain')
+
+    def _get_knowledge_folder_id(self) -> str | None:
+        """Get an explicit Drive folder id for the knowledge folder, bypassing
+        name lookup entirely. Takes precedence over `knowledge_folder_name`
+        when set. Grab it from the folder's Drive link:
+        drive.google.com/drive/folders/<THIS PART>."""
+        folder_id = os.getenv('KNOWLEDGE_FOLDER_ID', '').strip()
+        return folder_id or None
+
     def _get_day_cutoff_hour(self) -> int:
         """Get the hour (0-23) before which messages belong to the previous day's file.
 
@@ -214,9 +237,9 @@ class Config:
             sys.exit(1)
         return key
 
-    def _get_timebox_llm_model(self) -> str:
-        """Get the OpenRouter model used for /timebox scheduling."""
-        return os.getenv('TIMEBOX_LLM_MODEL', 'deepseek/deepseek-v4-flash')
+    def _get_llm_model(self) -> str:
+        """Get the OpenRouter model used by both /timebox and /search."""
+        return os.getenv('LLM_MODEL', 'deepseek/deepseek-v4-flash')
 
     def _get_timebox_timezone(self) -> str:
         """Get the IANA timezone used to compute the /timebox target day."""
