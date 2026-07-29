@@ -170,6 +170,56 @@ def send_message():
         return jsonify({'error': 'internal error'}), 500
 
 
+WEBHOOK_PROCESSING_TIMEOUT_SECONDS = 60
+
+
+def _extract_chat_id(update_data: dict):
+    """Best-effort chat id lookup across every update shape this bot handles."""
+    try:
+        if 'deleted_messages' in update_data:
+            return update_data.get('chat', {}).get('id')
+        update = Update.de_json(update_data, bot_app.bot)
+        return update.effective_chat.id if update and update.effective_chat else None
+    except Exception:
+        return None
+
+
+async def _notify_processing_failed(chat_id) -> None:
+    """DM the user when we gave up waiting on a webhook update server-side."""
+    try:
+        await bot_app.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ That took too long to process and was stopped. Please try again.",
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify user {chat_id} of processing failure: {e}")
+
+
+async def _process_update_with_timeout(update_data: dict) -> None:
+    """Run process_update on the event loop with its own internal timeout.
+
+    Runs entirely off the Flask thread, so a slow handler never delays our
+    HTTP ack to Telegram. Ack'ing late is what caused Telegram to retry
+    delivery — running process_update() a second time concurrently with the
+    still-in-flight first attempt, which is how /timebox's /done was
+    double-writing to Google Calendar. Ack'ing immediately (see webhook())
+    removes that incentive for Telegram to retry; this timeout just bounds
+    how long we wait before giving up and notifying the user directly.
+    """
+    try:
+        await asyncio.wait_for(process_update(update_data), timeout=WEBHOOK_PROCESSING_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.error(
+            f"Webhook processing exceeded {WEBHOOK_PROCESSING_TIMEOUT_SECONDS}s, "
+            "giving up and notifying user"
+        )
+        chat_id = _extract_chat_id(update_data)
+        if chat_id is not None:
+            await _notify_processing_failed(chat_id)
+    except Exception as e:
+        logger.error(f"Error in webhook processing: {e}", exc_info=True)
+
+
 @app.route(f'/webhook/<token>', methods=['POST'])
 def webhook(token):
     """Handle incoming webhook updates from Telegram."""
@@ -179,19 +229,17 @@ def webhook(token):
         return Response(status=403)
 
     try:
-        # Get the update data from Telegram
         update_data = request.get_json(force=True)
-
-        # Process the update asynchronously using the persistent event loop
-        future = asyncio.run_coroutine_threadsafe(process_update(update_data), event_loop)
-        # Wait for the coroutine to complete (with timeout to prevent hanging)
-        future.result(timeout=30)
-
-        return Response(status=200)
-
     except Exception as e:
-        logger.error(f"Error in webhook endpoint: {e}", exc_info=True)
+        logger.error(f"Error parsing webhook payload: {e}", exc_info=True)
         return Response(status=500)
+
+    # Fire-and-forget onto the persistent event loop and ack immediately —
+    # do NOT block this thread on the result. See _process_update_with_timeout
+    # for why: waiting here is what let Telegram's own delivery timeout race
+    # ours and trigger a retry, double-processing the same update.
+    asyncio.run_coroutine_threadsafe(_process_update_with_timeout(update_data), event_loop)
+    return Response(status=200)
 
 
 def setup_bot_application() -> Application:

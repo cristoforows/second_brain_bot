@@ -93,7 +93,7 @@ def _parse_time(text: str) -> str | None:
 
 async def _begin_collection(query, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start task collection. On a non-working day, first ask for a start time."""
-    context.user_data[_TASKS_KEY] = []
+    context.user_data[_TASKS_KEY] = {}
     mode = context.user_data.get(_MODE_KEY, "wfh")
     if mode == "nonworking":
         keyboard = InlineKeyboardMarkup(
@@ -155,7 +155,7 @@ async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     # No calendar configured -> text-only mode, skip the existence check.
     if not config.timebox_calendar_id:
-        context.user_data[_TASKS_KEY] = []
+        context.user_data[_TASKS_KEY] = {}
         await query.edit_message_text(f"Mode: {mode}. {_COLLECT_PROMPT}")
         return COLLECTING
 
@@ -177,6 +177,7 @@ async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         exists = await asyncio.to_thread(
             calendar_handler.has_existing_schedule,
             service, config.timebox_calendar_id, target_date, config.timebox_timezone,
+            config.timebox_day_start,
         )
     except Exception as e:
         logger.error(f"Calendar existence check failed for user {user_id}: {e}")
@@ -237,9 +238,27 @@ async def set_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def collect_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Buffer one task message verbatim and acknowledge with a 👍 reaction."""
-    context.user_data.setdefault(_TASKS_KEY, []).append(update.message.text)
+    """Buffer one task message verbatim and acknowledge with a 👍 reaction.
+
+    Keyed by message_id (not appended to a list) so a later edit to the same
+    message can update it in place via edit_task."""
+    context.user_data.setdefault(_TASKS_KEY, {})[update.message.message_id] = update.message.text
     await update.message.set_reaction(ReactionEmoji.THUMBS_UP)
+    return COLLECTING
+
+
+async def edit_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Update a buffered task in place when its source message is edited.
+
+    Session messages never reach Drive (see _COLLECT_PROMPT) — an edit to a
+    message from outside this session's buffer (e.g. an older message sent
+    before /timebox started) is silently ignored rather than falling through
+    to the normal Drive-edit route, consistent with that same rule."""
+    message = update.edited_message
+    tasks = context.user_data.get(_TASKS_KEY) or {}
+    if message.message_id in tasks:
+        tasks[message.message_id] = message.text
+        await message.set_reaction(ReactionEmoji.THUMBS_UP)
     return COLLECTING
 
 
@@ -274,22 +293,25 @@ def _render_published(result, write_results, target_date: date) -> str:
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /done - generate the schedule and publish it to the calendar."""
-    tasks = context.user_data.get(_TASKS_KEY) or []
+    tasks = context.user_data.get(_TASKS_KEY) or {}
     if not tasks:
         await update.message.reply_text("No tasks collected — timebox session ended.")
         return ConversationHandler.END
+
+    await update.message.reply_text("⏳ Building your schedule — this can take a bit, hang tight...")
 
     user_id = update.effective_user.id
     mode = context.user_data.get(_MODE_KEY, "wfh")
     target_date = context.user_data.get(_DATE_KEY) or scheduler.compute_target_date(
         datetime.now(timezone.utc), config.timebox_timezone, config.timebox_cutoff_hour
     )
+    start_override = context.user_data.get(_START_KEY)
 
     try:
         # to_thread: the langchain call is sync; don't block the event loop
-        day = _day_config(context.user_data.get(_START_KEY))
+        day = _day_config(start_override)
         result = await asyncio.to_thread(
-            scheduler.generate_schedule, tasks, target_date, _llm(), day, mode
+            scheduler.generate_schedule, list(tasks.values()), target_date, _llm(), day, mode
         )
     except scheduler.ScheduleGenerationError:
         logger.error(f"Schedule generation failed twice for user {user_id}")
@@ -319,9 +341,13 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     try:
         # Clear-then-write: idempotent regardless of redo or a prior partial /done.
+        # Bounded at day_start so a late-night event that crossed midnight into
+        # target_date (see calendar_handler._slot_to_datetimes) is left alone —
+        # it belongs to the previous day's schedule, not this one.
         await asyncio.to_thread(
             calendar_handler.clear_timebox_events,
             service, config.timebox_calendar_id, target_date, config.timebox_timezone,
+            start_override or config.timebox_day_start,
         )
         write_results = await asyncio.to_thread(
             calendar_handler.write_schedule,
@@ -382,6 +408,7 @@ def build_timebox_handler() -> ConversationHandler:
     are handled inside the conversation's own states, not as global commands.
     """
     task_message = filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND
+    task_message_edit = filters.UpdateType.EDITED_MESSAGE & filters.TEXT & ~filters.COMMAND
     return ConversationHandler(
         entry_points=[CommandHandler("timebox", start_session)],
         states={
@@ -396,6 +423,7 @@ def build_timebox_handler() -> ConversationHandler:
                 CommandHandler("done", done),
                 CommandHandler("cancel", cancel),
                 MessageHandler(task_message, collect_task),
+                MessageHandler(task_message_edit, edit_task),
             ],
             ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, expire)],
         },

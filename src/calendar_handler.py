@@ -43,28 +43,43 @@ def get_calendar_service(user_id: int, token_storage: TokenStorage):
 def _slot_to_datetimes(target_date: date, start: str, end: str, tz: str) -> tuple[datetime, datetime]:
     """Combine the target date with HH:MM slot bounds into tz-aware datetimes.
 
-    An end at or before the start is treated as crossing midnight into the next
-    day (e.g. a 23:30-00:30 slot)."""
+    An end strictly before the start is treated as crossing midnight into the
+    next day (e.g. a 23:30-00:30 slot). start == end is never valid — that's
+    rejected upstream by ScheduleItem's validator, not treated as a 24h slot
+    here."""
     zone = ZoneInfo(tz)
     sh, sm = (int(p) for p in start.split(":"))
     eh, em = (int(p) for p in end.split(":"))
     start_dt = datetime(target_date.year, target_date.month, target_date.day, sh, sm, tzinfo=zone)
     end_dt = datetime(target_date.year, target_date.month, target_date.day, eh, em, tzinfo=zone)
-    if end_dt <= start_dt:
+    if end_dt < start_dt:
         end_dt += timedelta(days=1)
     return start_dt, end_dt
 
 
-def _day_bounds(target_date: date, tz: str) -> tuple[str, str]:
-    """RFC3339 [start, end) covering the whole target date in the given tz."""
+def _day_bounds(target_date: date, tz: str, day_start: str | None = None) -> tuple[str, str]:
+    """RFC3339 [start, end) covering the target date in the given tz.
+
+    day_start ("HH:MM"), if given, raises the lower bound from midnight to
+    wake time so a late-night event that crossed over from the previous
+    day's schedule (see _slot_to_datetimes) isn't mistaken for part of this
+    day's."""
     zone = ZoneInfo(tz)
-    day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=zone)
-    return day_start.isoformat(), (day_start + timedelta(days=1)).isoformat()
+    midnight = datetime(target_date.year, target_date.month, target_date.day, tzinfo=zone)
+    lower = midnight
+    if day_start:
+        h, m = (int(p) for p in day_start.split(":"))
+        lower = midnight.replace(hour=h, minute=m)
+    return lower.isoformat(), (midnight + timedelta(days=1)).isoformat()
 
 
-def list_timebox_events(service, calendar_id: str, target_date: date, tz: str) -> list[dict]:
-    """Return the bot's own events on the target date (filtered by our tag)."""
-    time_min, time_max = _day_bounds(target_date, tz)
+def list_timebox_events(
+    service, calendar_id: str, target_date: date, tz: str, day_start: str | None = None
+) -> list[dict]:
+    """Return the bot's own events on the target date (filtered by our tag).
+
+    day_start excludes events before wake time -- see _day_bounds."""
+    time_min, time_max = _day_bounds(target_date, tz, day_start)
     result = (
         service.events()
         .list(
@@ -79,14 +94,18 @@ def list_timebox_events(service, calendar_id: str, target_date: date, tz: str) -
     return result.get("items", [])
 
 
-def has_existing_schedule(service, calendar_id: str, target_date: date, tz: str) -> bool:
+def has_existing_schedule(
+    service, calendar_id: str, target_date: date, tz: str, day_start: str | None = None
+) -> bool:
     """True if the bot has already written a schedule for the target date."""
-    return len(list_timebox_events(service, calendar_id, target_date, tz)) > 0
+    return len(list_timebox_events(service, calendar_id, target_date, tz, day_start)) > 0
 
 
-def clear_timebox_events(service, calendar_id: str, target_date: date, tz: str) -> int:
+def clear_timebox_events(
+    service, calendar_id: str, target_date: date, tz: str, day_start: str | None = None
+) -> int:
     """Delete the bot's own events on the target date. Returns the count deleted."""
-    events = list_timebox_events(service, calendar_id, target_date, tz)
+    events = list_timebox_events(service, calendar_id, target_date, tz, day_start)
     deleted = 0
     for event in events:
         try:

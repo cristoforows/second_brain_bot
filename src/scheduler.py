@@ -13,12 +13,13 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _MAX_ATTEMPTS = 2  # one automatic retry
+_GAP_TOLERANCE_MIN = 5  # gaps at/below this are left alone (rounding, room-to-room); also told to the LLM in the prompt
 
 Mode = Literal["office", "wfh", "nonworking"]
 
@@ -67,7 +68,11 @@ with the user's task instead of emitting both.
 - A task may include a duration (e.g. "90m", "2h") and/or freeform constraints \
 (e.g. "morning", "after 6pm"). Honor them exactly.
 - Estimate a sensible duration for any task that has none.
-- Time slots must not overlap. Short breathing gaps between tasks are fine.
+- Slots must not overlap and must chain together: the end time of one slot \
+should equal the start time of the next. A gap of more than \
+{gap_tolerance_min} minutes between two consecutive slots is invalid output — \
+if there is unscheduled time between tasks, fill it instead of leaving it out. \
+See below for how to fill it.
 - Use 24-hour HH:MM times.
 {workday_rules}\
 - If everything cannot fit in the day, drop the least important / least \
@@ -86,14 +91,21 @@ hour when you can. Never schedule work past {work_end_hard}; if work tasks canno
 fit by {work_end_hard}, drop the least important and report them.
 - Non-work tasks may take at most 60 minutes TOTAL inside the work window \
 {work_start}-{work_end}; schedule any remaining non-work tasks after {work_end}.
-- Leave no empty stretches in the day — fill every gap with placeholder focus \
-slots the user decides on the day itself:
+- Fill every gap per the contiguity rule above with placeholder focus slots \
+the user decides on the day itself:
   - Between {work_start} and {work_end}, fill gaps with 90-minute "Work Focus" \
 slots separated by 15-minute "Break" slots.
   - Between {work_end} and 23:30, fill gaps with 90-minute "Personal Focus" \
 slots separated by 15-minute "Break" slots.
   Keep these focus slots even when there is nothing else to schedule. Never \
 create a focus slot after 23:30.
+"""
+
+# Non-working days skip the work-window/focus-slot machinery above entirely,
+# but still need a filler mechanism to satisfy the contiguity rule.
+_NONWORKING_RULES = """\
+- Fill every gap per the contiguity rule above with a plain "Free Time" slot. \
+Keep doing this even when there is nothing else to schedule.
 """
 
 _COMMUTE_OFFICE = (
@@ -114,6 +126,17 @@ class ScheduleItem(BaseModel):
     end: str = Field(description="Slot end time, 24h HH:MM")
     task: str = Field(description="Short task name")
     note: str | None = Field(default=None, description="Optional scheduling note")
+
+    @field_validator("end")
+    @classmethod
+    def _end_not_equal_start(cls, end: str, info) -> str:
+        # A zero-duration slot is never valid. calendar_handler treats any
+        # end <= start as crossing midnight into the next day, so letting
+        # start == end through would silently write a ~24h calendar event
+        # instead of the short task the LLM actually meant.
+        if end == info.data.get("start"):
+            raise ValueError(f"zero-duration slot: start and end both {end!r}")
+        return end
 
 
 class DroppedTask(BaseModel):
@@ -161,9 +184,10 @@ def _build_system_prompt(target_date: date, day: DayConfig, mode: Mode) -> str:
         commute_evening=day.commute_evening,
         commute_duration=day.commute_duration_min,
     )
-    # Work-window boundaries and focus filling apply on working days only.
+    # Work-window boundaries and focus filling apply on working days only;
+    # non-working days get a simpler Free Time filler instead.
     if mode == "nonworking":
-        workday_rules = ""
+        workday_rules = _NONWORKING_RULES
     else:
         workday_rules = _WORKDAY_RULES.format(
             work_start=day.work_start,
@@ -181,7 +205,47 @@ def _build_system_prompt(target_date: date, day: DayConfig, mode: Mode) -> str:
         eat_duration=day.eat_duration_min,
         commute_block=commute_block,
         workday_rules=workday_rules,
+        gap_tolerance_min=_GAP_TOLERANCE_MIN,
     )
+
+
+_MAX_FILLABLE_GAP_MIN = 720  # 12h; larger implies out-of-order/overlapping items, not a real gap
+
+
+def _minutes_between(start: str, end: str) -> int:
+    """Minutes from start to end, treating end < start as crossing midnight.
+
+    start == end is zero minutes, not a full day — this is used to measure
+    the gap between two already-adjacent slot boundaries, where equality is
+    the common case of "no gap at all"."""
+    sh, sm = (int(p) for p in start.split(":"))
+    eh, em = (int(p) for p in end.split(":"))
+    delta = (eh * 60 + em) - (sh * 60 + sm)
+    return delta if delta >= 0 else delta + 24 * 60
+
+
+def _fill_gaps(schedule: list[ScheduleItem]) -> list[ScheduleItem]:
+    """Insert a "Buffer" slot into any gap the LLM left between two items.
+
+    The prompt tells the LLM to leave no empty stretches (see _WORKDAY_RULES),
+    but it doesn't always comply — e.g. a 40-minute unfilled gap between a
+    commute and the next task was observed in practice. This deterministically
+    guarantees a contiguous day regardless of what the LLM actually returns."""
+    if not schedule:
+        return schedule
+    filled = [schedule[0]]
+    for item in schedule[1:]:
+        prev = filled[-1]
+        gap = _minutes_between(prev.end, item.start)
+        if _GAP_TOLERANCE_MIN < gap <= _MAX_FILLABLE_GAP_MIN:
+            filled.append(ScheduleItem(start=prev.end, end=item.start, task="Buffer"))
+        elif gap > _MAX_FILLABLE_GAP_MIN:
+            logger.warning(
+                f"Skipping implausible {gap}min gap between {prev.task!r} and "
+                f"{item.task!r} — items may be out of order or overlapping"
+            )
+        filled.append(item)
+    return filled
 
 
 def generate_schedule(
@@ -204,6 +268,7 @@ def generate_schedule(
             if result is None:
                 # with_structured_output returns None when parsing fails silently
                 raise ValueError("structured output could not be parsed")
+            result.schedule = _fill_gaps(result.schedule)
             return result
         except Exception as e:
             last_error = e
