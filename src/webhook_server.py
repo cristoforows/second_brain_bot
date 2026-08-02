@@ -4,26 +4,62 @@ Webhook server for Telegram bot using Flask.
 Receives webhook updates from Telegram and processes them.
 """
 
+from __future__ import annotations
+
 import logging
 import os
-from flask import Flask, request, Response, jsonify
-from telegram import Update
-from telegram.error import BadRequest, Forbidden, TelegramError
-from telegram.ext import Application
 import asyncio
 import hmac
 import json
 import threading
 
+from flask import Flask, request, Response, jsonify
+
 from config import config
-from bot import register_handlers, handle_deleted_message
-from google_auth import handle_oauth_callback, TokenStorage
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Create Flask app
 app = Flask(__name__)
+
+# The rest of the bot stack (python-telegram-bot, and transitively Drive,
+# Calendar, and the langchain-based /timebox LLM client) is heavy to import —
+# on Fly's machine this took ~7s, all before main() could even run, since
+# plain top-level imports resolve before any of our code executes. These
+# names are populated by _load_bot_modules(), called from main() *after*
+# Flask has already started accepting connections (see main()). Every route
+# that touches them gates on _bot_ready() first, so a request arriving before
+# they're loaded gets a clean 503 instead of a NameError.
+Update = None
+BadRequest = None
+Forbidden = None
+TelegramError = None
+Application = None
+register_handlers = None
+handle_deleted_message = None
+handle_oauth_callback = None
+TokenStorage = None
+
+
+def _load_bot_modules() -> None:
+    """Import the heavy bot stack. Call once, from main(), before anything
+    below needs these names."""
+    global Update, BadRequest, Forbidden, TelegramError, Application
+    global register_handlers, handle_deleted_message, handle_oauth_callback, TokenStorage
+
+    from telegram import Update as _Update
+    from telegram.error import BadRequest as _BadRequest, Forbidden as _Forbidden, TelegramError as _TelegramError
+    from telegram.ext import Application as _Application
+    from bot import register_handlers as _register_handlers, handle_deleted_message as _handle_deleted_message
+    from google_auth import handle_oauth_callback as _handle_oauth_callback, TokenStorage as _TokenStorage
+
+    Update = _Update
+    BadRequest, Forbidden, TelegramError = _BadRequest, _Forbidden, _TelegramError
+    Application = _Application
+    register_handlers, handle_deleted_message = _register_handlers, _handle_deleted_message
+    handle_oauth_callback, TokenStorage = _handle_oauth_callback, _TokenStorage
+
 
 # Global bot application instance and event loop
 bot_app: Application = None
@@ -68,13 +104,19 @@ def index():
 
 
 def _bot_ready() -> bool:
-    """True once bot_app/event_loop/token_storage finished initializing.
+    """True once _load_bot_modules() and the rest of main()'s setup finished.
 
     Flask starts accepting connections before this is true (see main()), so
-    routes that touch those globals need this guard to fail fast with a
-    clean 503 instead of a NoneType error during the brief startup window.
+    routes that touch bot_app/event_loop/token_storage/the deferred imports
+    need this guard to fail fast with a clean 503 instead of a NoneType/
+    NameError during the brief startup window.
     """
-    return bot_app is not None and event_loop is not None and token_storage is not None
+    return (
+        Update is not None
+        and bot_app is not None
+        and event_loop is not None
+        and token_storage is not None
+    )
 
 
 @app.route('/oauth/callback')
@@ -325,12 +367,13 @@ def main():
     """Main function to start the webhook server.
 
     Flask starts accepting connections *before* the bot/DB/webhook setup
-    below, on its own thread — that setup (Postgres pool, Telegram API round
-    trips for initialize/start/setWebhook) took ~2-3s of the machine's cold
-    start, during which Fly's proxy was hammering a port nothing was
-    listening on yet and giving up. Binding the port first closes that gap;
-    routes that need bot_app/event_loop/token_storage guard on _bot_ready()
-    for the brief window before this function finishes.
+    below, on its own thread — that setup (importing the bot stack, Postgres
+    pool, Telegram API round trips for initialize/start/setWebhook) took
+    ~9-10s of the machine's cold start (~7s of it just imports), during which
+    Fly's proxy was hammering a port nothing was listening on yet and giving
+    up. Binding the port first closes that gap; routes that need the
+    deferred imports or bot_app/event_loop/token_storage guard on
+    _bot_ready() for the window before this function finishes.
     """
     global bot_app, event_loop, token_storage
 
@@ -341,6 +384,10 @@ def main():
     flask_thread.start()
 
     try:
+        logger.info("Loading bot modules (python-telegram-bot, Drive, Calendar, LLM stack)...")
+        _load_bot_modules()
+        logger.info("Bot modules loaded")
+
         # Initialize token storage
         token_storage = TokenStorage(config.database_url, config.token_encryption_key)
         logger.info("Token storage initialized")
