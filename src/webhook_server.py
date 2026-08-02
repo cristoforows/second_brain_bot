@@ -63,13 +63,26 @@ async def _handle_deleted_messages_update(update_data: dict) -> None:
 
 @app.route('/')
 def index():
-    """Health check endpoint."""
+    """Health check endpoint. Always available — doesn't touch bot_app/token_storage."""
     return {'status': 'ok', 'message': 'Telegram bot webhook server is running'}
+
+
+def _bot_ready() -> bool:
+    """True once bot_app/event_loop/token_storage finished initializing.
+
+    Flask starts accepting connections before this is true (see main()), so
+    routes that touch those globals need this guard to fail fast with a
+    clean 503 instead of a NoneType error during the brief startup window.
+    """
+    return bot_app is not None and event_loop is not None and token_storage is not None
 
 
 @app.route('/oauth/callback')
 def oauth_callback():
     """Handle Google OAuth callback redirect."""
+    if not _bot_ready():
+        return "<h1>Still starting up</h1><p>Please try again in a few seconds.</p>", 503
+
     code = request.args.get('code')
     state = request.args.get('state')
     error = request.args.get('error')
@@ -120,6 +133,9 @@ def send_message():
     """
     if not config.outbound_api_secret:
         return jsonify({'error': 'endpoint disabled'}), 503
+
+    if not _bot_ready():
+        return jsonify({'error': 'still starting up, try again shortly'}), 503
 
     auth_header = request.headers.get('Authorization', '')
     prefix = 'Bearer '
@@ -231,6 +247,13 @@ def webhook(token):
         logger.warning(f"Webhook called with invalid token: [REDACTED]")
         return Response(status=403)
 
+    if not _bot_ready():
+        # Flask accepts connections before bot_app finishes initializing (see
+        # main()) — 503 here so Telegram retries shortly instead of getting a
+        # raw connection failure during that window.
+        logger.warning("Webhook received before bot finished starting up, returning 503")
+        return Response(status=503)
+
     try:
         update_data = request.get_json(force=True)
     except Exception as e:
@@ -288,11 +311,34 @@ def start_event_loop(loop):
     loop.run_forever()
 
 
+def _run_flask():
+    """Run the Flask dev server. Called on its own thread — see main()."""
+    app.run(
+        host='0.0.0.0',
+        port=config.webhook_port,
+        debug=False,  # Set to False in production
+        use_reloader=False,  # the reloader forks; not compatible with a non-main thread
+    )
+
+
 def main():
-    """Main function to start the webhook server."""
+    """Main function to start the webhook server.
+
+    Flask starts accepting connections *before* the bot/DB/webhook setup
+    below, on its own thread — that setup (Postgres pool, Telegram API round
+    trips for initialize/start/setWebhook) took ~2-3s of the machine's cold
+    start, during which Fly's proxy was hammering a port nothing was
+    listening on yet and giving up. Binding the port first closes that gap;
+    routes that need bot_app/event_loop/token_storage guard on _bot_ready()
+    for the brief window before this function finishes.
+    """
     global bot_app, event_loop, token_storage
 
     logger.info("Starting Telegram bot in webhook mode...")
+
+    logger.info(f"Starting Flask server on port {config.webhook_port}...")
+    flask_thread = threading.Thread(target=_run_flask, daemon=True)
+    flask_thread.start()
 
     try:
         # Initialize token storage
@@ -325,13 +371,14 @@ def main():
 
         asyncio.run_coroutine_threadsafe(set_webhook(), event_loop).result(timeout=10)
 
-        # Start Flask server
-        logger.info(f"Starting Flask server on port {config.webhook_port}...")
-        app.run(
-            host='0.0.0.0',
-            port=config.webhook_port,
-            debug=False  # Set to False in production
-        )
+        logger.info("Bot fully initialized and ready to process updates")
+
+        # Flask itself runs on flask_thread; block here so the process stays
+        # alive and a crashed Flask thread is noticed instead of running on
+        # silently with a dead server.
+        while flask_thread.is_alive():
+            flask_thread.join(timeout=1)
+        logger.critical("Flask server thread exited unexpectedly")
 
     except Exception as e:
         logger.critical(f"Failed to start webhook server: {e}")
