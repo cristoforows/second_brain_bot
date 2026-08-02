@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 SCOPES = [
     'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/calendar.events',
 ]
 
@@ -289,6 +290,21 @@ def has_calendar_scope(user_id: int, token_storage: TokenStorage) -> bool:
         return False
     granted = token_data.get('scopes') or []
     return 'https://www.googleapis.com/auth/calendar.events' in granted
+
+
+def has_drive_read_scope(user_id: int, token_storage: TokenStorage) -> bool:
+    """True if the user's stored token was granted the drive.readonly scope.
+
+    drive.file alone only sees files this app created — it can't read the
+    knowledge folder written by the external second-brain service. Tokens
+    minted before /search existed lack drive.readonly; the user must
+    re-authenticate.
+    """
+    token_data = token_storage.get_user_token(user_id)
+    if not token_data:
+        return False
+    granted = token_data.get('scopes') or []
+    return 'https://www.googleapis.com/auth/drive.readonly' in granted
 
 
 # --- State management (CSRF protection) ---

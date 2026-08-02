@@ -15,6 +15,7 @@ from telegram.ext import ContextTypes
 
 from config import config
 import drive_handler
+from google_auth import has_drive_read_scope
 import scheduler
 import vault_agent
 
@@ -38,10 +39,19 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    if not has_drive_read_scope(user_id, token_storage):
+        await update.message.reply_text(
+            "Your login predates /search's Drive read access. Please re-run "
+            "/authenticate to grant it, then try again."
+        )
+        return
+
     query = " ".join(context.args).strip() if context.args else ""
     if not query:
         await update.message.reply_text("Usage: /search <query>\ne.g. /search dentist")
         return
+
+    await update.message.reply_text(f'🔎 Searching for "{query}"...')
 
     service = drive_handler.get_drive_service(user_id, token_storage)
     if not service:
