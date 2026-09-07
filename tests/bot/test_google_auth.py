@@ -122,3 +122,18 @@ def test_checkout_discards_connection_raising_interface_error():
 
     assert conn is healthy
     assert pool.putconn_calls == [(stale, True)]
+
+
+def test_checkout_closes_second_connection_when_retry_also_fails():
+    first_stale = _FakeConnection("first_stale", fails_with=psycopg2.OperationalError("connection lost"))
+    second_stale = _FakeConnection("second_stale", fails_with=psycopg2.OperationalError("connection lost"))
+    pool = _FakePool([first_stale, second_stale])
+    storage = _make_token_storage(pool)
+
+    try:
+        storage._checkout()
+        assert False, "expected psycopg2.OperationalError to propagate"
+    except psycopg2.OperationalError:
+        pass
+
+    assert pool.putconn_calls == [(first_stale, True), (second_stale, True)]
