@@ -61,6 +61,8 @@ class TokenStorage:
         resume — checked out here with SELECT 1 before use. A stale
         connection (OperationalError/InterfaceError) is discarded (closed,
         not returned to the pool) and we retry once with a fresh connection.
+        If that retry also fails, the second connection is closed too
+        (rather than leaked) before the error propagates.
         """
         conn = self.connection_pool.getconn()
         try:
@@ -71,9 +73,14 @@ class TokenStorage:
             logger.warning(f"Discarding stale database connection: {e}")
             self.connection_pool.putconn(conn, close=True)
             conn = self.connection_pool.getconn()
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-            return conn
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                return conn
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e2:
+                logger.warning(f"Discarding stale database connection on retry: {e2}")
+                self.connection_pool.putconn(conn, close=True)
+                raise
 
     def save_user_token(self, user_id: int, token_data: dict) -> None:
         """Save encrypted token to PostgreSQL database."""
