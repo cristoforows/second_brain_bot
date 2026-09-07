@@ -29,10 +29,20 @@ venv/
 # Logs
 *.log
 
+# Summarizer per-run debug log files (SUMMARIZER_LOG_DIR)
+tmp/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
 # Kubernetes secrets (if not using sealed-secrets)
 # IMPORTANT: Never commit k8s/secret.yaml with real values
 # k8s/secret.yaml
 # Use sealed-secrets or external secret managers instead
-
-# Docker volumes
-docker-compose.override.yml

@@ -26,6 +26,8 @@ tokens/
 *.json
 credentials.json
 token.json
+client_secret.json
+service-account.json
 
 # IDE
 .vscode/
@@ -40,22 +42,16 @@ token.json
 DEVELOPMENT.md
 CLAUDE.md
 
-# Scripts
-*.sh
-run_local.sh
-start_webhook.sh
-
 # Logs
 *.log
 logs/
+tmp/
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 tests/
-requirements-dev.txt
-pytest.ini
 
 # Local tooling / agent worktrees (can be very large)
 .claude/

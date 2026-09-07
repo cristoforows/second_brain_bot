@@ -1,83 +1,115 @@
-# Second Brain Telegram Bot
+# Second Brain
 
-A Telegram bot that collects your chat messages and stores them in Google Drive for building your personal second brain knowledge base.
+A Telegram bot that captures your messages into Google Drive, plus a nightly
+AI agent that organizes those captures into a living PARA-method knowledge
+base. One installable Python package (`second-brain`), one CLI, one Docker
+image, one test suite.
 
 ## What It Does
 
-This bot acts as your personal data collector:
+**The bot** (`second-brain serve` / `second-brain poll`):
 - Listens to messages you send in Telegram
-- Collects and structures your chat data
-- Uploads data to your Google Drive
-- Data is later processed by specialized services for filtering and organization
+- Authenticates you via Google OAuth 2.0 (`/authenticate`)
+- Appends each message to a daily markdown file (`YYYY-MM-DD.md`) in your
+  Google Drive inbox folder — editing a Telegram message updates the same
+  entry in Drive; deleting one removes it
+- `/timebox` — an LLM (OpenRouter via LangChain) turns next-day tasks into a
+  timeboxed schedule, optionally published to a dedicated Google Calendar
+- `/search` — an LLM-driven agent walks your Drive knowledge base (written by
+  the summarizer, below) to answer questions over your notes
+- Exposes `POST /api/send-message`, a shared-secret-gated endpoint any
+  trusted caller can use to make the bot send a Telegram message
 
-Think of it as the first step in building your second brain - capturing everything you communicate in Telegram.
+**The summarizer** (`second-brain summarize`), run nightly as a one-off job:
+- Reads yesterday's dump file (`YYYY-MM-DD.md`) from the bot's inbox folder
+- Parses individual messages (delimited by `<!-- msg_id: {id} -->` comments)
+- An AI agent (LangGraph ReAct loop) classifies each message into a PARA
+  section (to-do, projects, areas, resources, archives), files it into the
+  right topic folder, merges it with existing notes, and keeps each folder's
+  `Directory.yaml` index up to date
+- Sends a run summary and an active to-do digest to your Telegram, straight
+  from the bot's own token (no HTTP hop between the two halves anymore — they
+  share one process/image)
+- `second-brain index` rebuilds `Directory.yaml` files across the knowledge
+  base; `second-brain prompt "..."` runs the agent with an ad-hoc query
 
-## Current Status
+Think of the bot as the capture layer and the summarizer as the filing
+clerk: everything you send in Telegram lands in Drive immediately, and once
+a day it gets organized into a searchable knowledge base you can `/search`
+from the same bot.
 
-**Functional**: The bot has a working webhook infrastructure, Google OAuth 2.0 authentication, encrypted token storage in PostgreSQL (Supabase), and Google Drive integration for saving and editing messages as markdown files. It also offers `/timebox` — an LLM (OpenRouter) turns your next-day tasks into a timeboxed schedule, optionally published to a dedicated Google Calendar.
+```
+Telegram ──(bot, real-time)──▶ inbox/YYYY-MM-DD.md (Google Drive)
+                                        │
+                          (summarizer, nightly, reads yesterday's file)
+                                        ▼
+                          knowledge base (Drive, PARA hierarchy)
+                                        │
+                          (bot, on demand)
+                                        ▼
+                                    /search
+```
 
 ## Requirements
 
-- Python 3.10 or higher (the codebase uses `X | None` type unions; the Docker image is built on 3.11)
-- Telegram account
-- Google account with Drive **and** Calendar API access
-- Telegram bot token from @BotFather
-- OpenRouter API key (required — used by `/timebox`)
+- Python 3.11+ (the Docker image is built on 3.12)
+- A Telegram account and a bot token from [@BotFather](https://t.me/BotFather)
+- A Google account with the Drive API (and Calendar API, for `/timebox`)
+  enabled
+- An [OpenRouter](https://openrouter.ai/keys) API key — required by
+  `/timebox`, `/search`, and the summarizer
+- A PostgreSQL database (e.g. [Supabase](https://supabase.com)) for the
+  bot's per-user token storage
 
-## Quick Setup
-
-### 1. Get Your Bot Token
-
-1. Open Telegram and message `@BotFather`
-2. Send `/newbot` and follow the instructions
-3. Save the bot token you receive
-
-### 2. Install Dependencies
+## Quick Start
 
 ```bash
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On macOS/Linux
-# venv\Scripts\activate   # On Windows
+git clone <repo-url>
+cd second_brain_bot
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 
-# Install required packages
-pip install -r requirements.txt
-```
-
-### 3. Configure Environment
-
-```bash
-# Copy example configuration
 cp .env.example .env
+# Edit .env with your credentials — see Configuration below
 
-# Edit .env with your credentials
+.venv/bin/second-brain poll                        # local bot, long-polling
+.venv/bin/second-brain summarize --date yesterday --dry-run   # summarizer, no writes
 ```
 
-Your `.env` file should contain:
-```env
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-LOG_LEVEL=INFO
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the full local setup (Google Cloud
+project, Postgres schema, ngrok for webhook testing) and
+[DEPLOY.md](DEPLOY.md) for the Fly.io production deployment.
+
+## CLI
+
+```
+second-brain serve                              # production webhook server (Flask/waitress)
+second-brain poll                               # local long-polling bot (no public URL needed)
+second-brain summarize [--date D] [--dry-run] [--verbose]
+                                                 # run the nightly pipeline once (D: YYYY-MM-DD, "yesterday", or "today"; default yesterday)
+second-brain index [--changed PATH ...] [--dry-run]
+                                                 # rebuild Directory.yaml files
+second-brain prompt "TEXT" [--dry-run]          # run the summarizer agent with an ad-hoc prompt
 ```
 
-### 4. Run the Bot
+## Bot Commands (Telegram)
 
-go to [DEVELOPMENT.md](DEVELOPMENT.md) for local development testing.
-go to [DEPLOY.md](DEPLOY.md) for remote deployment.
+- `/start`, `/help` — introduction and command list
+- `/authenticate` — connect your Google Drive via OAuth 2.0
+- `/search <query>` — ask a question over your organized knowledge base
+- `/timebox` — turn next-day tasks into a timeboxed schedule (optionally
+  written to Google Calendar)
+- `/status` — check authentication and Drive connection status
+- `/logout` — disconnect Google Drive and remove stored tokens
 
-## Usage
-
-- `/start` - Initialize conversation with the bot
-- `/help` - Get help information
-- `/authenticate` - Connect your Google Drive via OAuth 2.0
-- `/timebox` - Turn next-day tasks into a timeboxed schedule (optionally written to Google Calendar)
-- `/status` - Check authentication and Drive connection status
-- `/logout` - Disconnect Google Drive and remove stored tokens
-
-Once authenticated, send any text message and it gets saved to a daily markdown file in your Google Drive. Edit a message in Telegram and the Drive file updates automatically.
+Once authenticated, any plain-text message is saved to today's markdown file
+in your Drive inbox folder.
 
 ### Outbound Send-Message API
 
-`POST /api/send-message` lets a trusted caller make the bot send a Telegram message. Disabled unless `OUTBOUND_API_SECRET` is set.
+`POST /api/send-message` lets a trusted caller make the bot send a Telegram
+message. Disabled unless `OUTBOUND_API_SECRET` is set.
 
 ```bash
 curl -X POST https://your-domain.com/api/send-message \
@@ -86,160 +118,150 @@ curl -X POST https://your-domain.com/api/send-message \
   -d '{"chat_id": 123456789, "text": "hello from the bot"}'
 ```
 
-Body fields: `chat_id` (int or string, required), `text` (string, required, ≤4096 chars), `parse_mode` (optional: `Markdown`, `MarkdownV2`, or `HTML`). Returns `{"ok": true, "message_id": <int>}` on success.
+Body fields: `chat_id` (int or string, required), `text` (string, required,
+≤4096 chars), `parse_mode` (optional: `Markdown`, `MarkdownV2`, or `HTML`).
+Returns `{"ok": true, "message_id": <int>}` on success.
 
-## Project Structure
+## Project Layout
 
 ```
-second_brain_bot/
-├── src/
-│   ├── bot.py              # Command handlers (/start, /help, /authenticate, /timebox, /status, /logout) + register_handlers
-│   ├── webhook_server.py   # Flask server: Telegram webhook, OAuth callback, outbound /api/send-message
-│   ├── config.py           # Configuration and environment management
-│   ├── google_auth.py      # OAuth 2.0 flow (drive.file + calendar.events), token storage (PostgreSQL), CSRF protection
-│   ├── drive_handler.py    # Google Drive API: file creation, message append/edit
-│   ├── timebox.py          # /timebox conversation: collect next-day tasks, build & publish a schedule
-│   ├── scheduler.py        # Timebox scheduling: target-date, LLM generation, rendering
-│   └── calendar_handler.py # Google Calendar writes for the schedule (tag/list/clear/per-item)
-├── Dockerfile              # Multi-stage Docker build
-├── docker-compose.yml      # Docker Compose deployment
-├── requirements.txt        # Python dependencies
-├── requirements-dev.txt    # Test-only dependencies (pytest), not shipped in the image
-├── .env                   # Your credentials (create from .env.example)
-├── .env.example           # Template for configuration
-├── README.md              # This file (user guide)
-├── DEVELOPMENT.md         # Local development guide
-├── DEPLOY.md              # Fly.io deployment guide
-└── CLAUDE.md              # Technical documentation for AI agents
+src/second_brain/
+  cli.py            # argparse entrypoint: serve | poll | summarize | index | prompt
+  core/             # shared: config, LLM factory, timezone math, logging, Telegram notify, data models
+  bot/              # Telegram capture bot: handlers, webhook server, Drive capture, OAuth, /timebox, /search
+  summarizer/       # nightly pipeline: dump parsing, PARA-filing agent, Drive client, agent tools
+tests/
+  bot/              # bot test suite (offline — no Telegram/Drive/DB calls)
+  summarizer/       # summarizer test suite (offline — mocked Drive/LLM)
+config.yaml         # summarizer's non-secret LLM tuning + seed categories
+pyproject.toml      # single package, all deps, dev extra, `second-brain` console script
+Dockerfile          # multi-stage build (uv), one image for both `serve` and `summarize`
+fly.toml            # Fly.io app config
 ```
 
 ## Configuration
 
-### Environment Variables
+All settings load from environment variables (`.env` locally, Fly secrets in
+production) plus `config.yaml` for the summarizer's non-secret LLM tuning.
+See `.env.example` for every variable with inline docs and defaults.
 
-- `TELEGRAM_BOT_TOKEN` (required) - Your bot token from @BotFather
-- `WEBHOOK_URL` (required) - Public HTTPS base URL (e.g. `https://your-domain.com`)
-- `WEBHOOK_PORT` (optional, default `8443`) - Port for webhook server (80, 88, 443, or 8443)
-- `WEBHOOK_PATH` (optional, default `/webhook`) - Path prefix for the webhook endpoint
-- `GOOGLE_CLIENT_ID` (required) - OAuth client ID from Google Cloud Console
-- `GOOGLE_CLIENT_SECRET` (required) - OAuth client secret
-- `GOOGLE_REDIRECT_URI` (optional) - OAuth callback URL (defaults to `{WEBHOOK_URL}/oauth/callback`)
-- `DATABASE_USER` / `DATABASE_PASSWORD` / `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_NAME` (required) - PostgreSQL connection details
-- `TOKEN_ENCRYPTION_KEY` (required) - Fernet key for encrypting stored OAuth tokens
-- `DRIVE_FOLDER_NAME` (optional, default `second_brain_bot/`) - Name of the Drive folder the bot creates; daily notes are stored inside it as `YYYY-MM-DD.md`
-- `DAY_CUTOFF_HOUR` (optional, default `0`) - Hour (0-23) before which messages are filed under the previous day. `0` disables it (midnight boundary)
-- `OUTBOUND_API_SECRET` (optional) - Shared secret for `POST /api/send-message`; leave unset to disable (returns 503). Generate with `openssl rand -hex 32`.
-- `LOG_LEVEL` (optional, default `INFO`) - Logging verbosity: DEBUG, INFO, WARNING, ERROR, CRITICAL
+### Bot — Telegram & webhook
 
-#### Timebox (`/timebox`)
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | yes | — | Bot token from @BotFather |
+| `WEBHOOK_URL` | prod only | — | Public HTTPS base URL |
+| `WEBHOOK_PORT` | no | `8443` | 80, 88, 443, or 8443 (Telegram requirement) |
+| `WEBHOOK_PATH` | no | `/webhook` | Path prefix for the webhook endpoint |
+| `OUTBOUND_API_SECRET` | no | unset (endpoint disabled) | Shared secret for `POST /api/send-message` |
+| `LOG_LEVEL` | no | `INFO` | DEBUG/INFO/WARNING/ERROR/CRITICAL |
 
-- `OPENROUTER_API_KEY` (**required**) - OpenRouter API key for schedule generation. Startup fails without it ([get one](https://openrouter.ai/keys))
-- `TIMEBOX_LLM_MODEL` (optional, default `deepseek/deepseek-v4-flash`) - OpenRouter model used for scheduling
-- `TIMEBOX_TIMEZONE` (optional, default `Asia/Singapore`) - IANA timezone for computing the target day
-- `TIMEBOX_CUTOFF_HOUR` (optional, default `3`) - Sessions finishing before this local hour plan the current day instead of tomorrow
-- `TIMEBOX_CALENDAR_ID` (optional) - Calendar ID of a **dedicated** calendar to publish the schedule into. Never `primary`. Unset → schedule is replied as text only
-- `TIMEBOX_DAY_START` / `TIMEBOX_DAY_END` / `TIMEBOX_LUNCH` / `TIMEBOX_DINNER` / `TIMEBOX_EAT_DURATION` / `TIMEBOX_COMMUTE_MORNING` / `TIMEBOX_COMMUTE_EVENING` / `TIMEBOX_COMMUTE_DURATION` (optional) - Fixed daily anchors handed to the planner as overridable defaults. See `.env.example` for defaults
+### Bot — Google OAuth & Drive capture
 
-### Google OAuth & Drive Setup
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GOOGLE_CLIENT_ID` | yes | — | OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | no | `""` | OAuth client secret |
+| `GOOGLE_REDIRECT_URI` | no | `{WEBHOOK_URL}/oauth/callback` | OAuth callback URL |
+| `DATABASE_USER`/`DATABASE_PASSWORD`/`DATABASE_HOST`/`DATABASE_PORT`/`DATABASE_NAME` | prod | — | Postgres connection for per-user token storage |
+| `TOKEN_ENCRYPTION_KEY` | yes | — | Fernet key encrypting stored OAuth tokens |
+| `DRIVE_FOLDER_NAME` | no | `second_brain_bot/` | Drive inbox folder; daily notes go here as `YYYY-MM-DD.md` |
+| `KNOWLEDGE_FOLDER_NAME` / `KNOWLEDGE_FOLDER_ID` | no | `SecondBrain` | Where `/search` reads the organized knowledge base from |
+| `DAY_CUTOFF_HOUR` | no | `0` (disabled) | Hour (0-23, in `APP_TIMEZONE`) before which a message files under the previous day |
 
-1. Create a project in [Google Cloud Console](https://console.cloud.google.com)
-2. Enable the Google Drive API **and** the Google Calendar API (the latter is needed for `/timebox` calendar publishing)
-3. Create OAuth 2.0 credentials (Web application type)
-4. Add your redirect URI (e.g. `https://your-domain.com/oauth/callback`)
-5. Copy the client ID and client secret to your `.env`
+### Shared — LLM and timezone
 
-The bot requests the `drive.file` and `calendar.events` scopes. If you authenticated before calendar support was added, re-run `/authenticate` to grant the new scope.
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `OPENROUTER_API_KEY` | yes | — | Used by `/timebox`, `/search`, and the summarizer |
+| `LLM_MODEL` | no | `deepseek/deepseek-v4-flash` | Model for `/timebox` and `/search` (summarizer's model comes from `config.yaml`) |
+| `APP_TIMEZONE` | no | `Asia/Singapore` | IANA timezone for `/timebox` target-day math, `DAY_CUTOFF_HOUR`, and the summarizer's "today"/"yesterday". `TIMEBOX_TIMEZONE` is a deprecated alias, still honored with a warning |
 
-### Database Setup (Supabase)
+### Timebox (`/timebox`)
 
-1. Create a project at [Supabase](https://supabase.com)
-2. Run this migration in the SQL Editor:
-   ```sql
-   CREATE TABLE user_tokens (
-       user_id BIGINT PRIMARY KEY,
-       encrypted_token TEXT NOT NULL,
-       token_expires_at TIMESTAMP,
-       last_accessed TIMESTAMP NOT NULL,
-       created_at TIMESTAMP NOT NULL DEFAULT NOW()
-   );
-   ```
-3. Copy the database connection details to your `.env`
+`TIMEBOX_CUTOFF_HOUR`, `TIMEBOX_CALENDAR_ID`, `TIMEBOX_DAY_START`/`_DAY_END`,
+`TIMEBOX_WORK_START`/`_WORK_END`/`_WORK_END_HARD`, `TIMEBOX_LUNCH`/`_DINNER`/
+`_EAT_DURATION`, `TIMEBOX_COMMUTE_MORNING`/`_EVENING`/`_DURATION` — see
+`.env.example` for defaults and descriptions.
 
-### Token Encryption
+### Summarizer (nightly `summarize`/`index`/`prompt`)
 
-Generate a Fernet key and add it to your `.env`:
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GOOGLE_SERVICE_REFRESH_TOKEN` | yes | `./token.json` | Path to the OAuth token JSON used for Drive access (or set `GOOGLE_TOKEN_JSON` to its content, for CI) |
+| `INPUT_DRIVE_FOLDER_ID` | yes | `""` | Drive folder ID holding the bot's `YYYY-MM-DD.md` dumps |
+| `VAULT_FOLDER_ID` | yes | `""` | Drive folder ID for the knowledge base. Fallback aliases `OUTPUT_DRIVE_FOLDER_ID`, then `KNOWLEDGE_FOLDER_ID`, are honored with a deprecation warning |
+| `SUMMARY_CHAT_ID` | yes | `""` | Telegram chat ID for the run summary / to-do digest. Fallback alias `TELEGRAM_CHAT_ID` |
+| `SUMMARIZER_LOG_DIR` | no | `""` (stdout only) | Directory for a per-run debug log file; Fly captures stdout, so leave empty in production |
+
+Non-secrets go in `config.yaml`:
+
+```yaml
+llm:
+  model: "deepseek/deepseek-v4-flash"
+  provider:
+    ignore: ["SomeProvider"]
+    allow_fallbacks: true
+  temperature: 0.5
+  max_tokens: 16000
+
+seed_categories:
+  - name: "work"
+    description: "Work-related tasks, meetings, projects"
+```
+
+### Google Cloud & Database Setup
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the step-by-step Google Cloud
+project setup (Drive + Calendar APIs, OAuth client, scopes) and the Postgres
+`user_tokens` table migration.
+
+## Dump File Format
+
+The bot writes messages as HTML-comment-delimited blocks the summarizer
+parses:
+
+```markdown
+<!-- msg_id: 12345 -->
+Had a productive meeting with the design team today.
+
+<!-- msg_id: 12346 -->
+Finished reading chapter 5 on replication.
+```
+
+## Testing
+
 ```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+.venv/bin/python -m pytest -q
+```
+
+The suite is fully offline — no Telegram, Drive, Postgres, or LLM calls.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for layout and conventions.
+
+## Docker
+
+```bash
+docker build -t second-brain .
+docker run --env-file .env -p 8443:8443 second-brain                 # serve (default CMD)
+docker run --env-file .env second-brain second-brain summarize --date yesterday
 ```
 
 ## Security
 
-- Never commit your `.env` file
-- Keep your bot token private
-- Don't share OAuth credentials
-- The `.gitignore` excludes sensitive files automatically
+- Never commit `.env`, `token.json`, `client_secret.json`, or
+  `service-account.json`
+- Keep the bot token and `OUTBOUND_API_SECRET` private — either grants full
+  bot impersonation
+- `.gitignore`/`.dockerignore` exclude all of the above by default
 
-## Future Improvements
+## Documentation
 
-### 1. Stateless Architecture
-
-The OAuth CSRF state cache (`_state_cache` in `google_auth.py`) currently lives in-memory. If the process restarts between a user clicking `/authenticate` and completing the Google consent screen, the callback fails. This also prevents running multiple instances.
-
-**Option A: External KV store (e.g. Cloudflare KV)**
-- OAuth state is short-lived (10 min TTL) — KV supports TTL natively
-- Access pattern is single-key lookup — KV's strongest use case
-- Low volume (only during auth, not per-message)
-
-**Option B: Signed state (no storage needed)**
-- Encode `user_id` and `expires_at` into the state string, sign it with `TOKEN_ENCRYPTION_KEY` using HMAC
-- The callback validates the signature and expiry without any storage lookup
-- Tradeoff: loses one-time-use enforcement, but Google's auth code is already single-use so the practical risk is minimal
-
-### 2. Batched Drive Writes
-
-Currently every message triggers a download-append-upload cycle (2 Drive API calls). For bursts of messages this is wasteful and creates potential race conditions.
-
-**Option A: Time-window buffer**
-- Collect messages in a buffer (in-memory, KV, or Redis)
-- Flush to Drive after N seconds of inactivity or when buffer hits a size threshold
-- Single download + append all + upload per flush
-- Risk: messages lost if the process dies mid-buffer; mitigate by buffering in durable storage
-
-**Option B: Pending messages table (more robust)**
-- Write each message immediately to a `pending_messages` table in PostgreSQL
-- A periodic job (every 30-60s) collects all pending messages per user, downloads the Drive file once, appends all, uploads, then marks them as synced
-- Edits update the pending row if not yet synced, or trigger a Drive update if already synced
-- Decouples Telegram response time from Drive API latency — the bot can acknowledge instantly
-
-### 3. Media Support (Images, Video, Audio, Files)
-
-Currently only text messages are handled. Supporting media requires a different storage strategy since binary files can't live inline in markdown.
-
-**Approach:**
-- Upload media files to a subfolder in the user's Google Drive (e.g. `SecondBrain/media/`)
-- Reference them in the markdown by Drive link:
-  ```markdown
-  <!-- msg_id: 456 -->
-  [Photo: sunset.jpg](https://drive.google.com/file/d/abc123/view)
-  Caption text here
-  ```
-
-**Considerations:**
-- **Telegram file download:** `await context.bot.get_file(file_id)` then `.download_as_bytearray()`. Telegram stores files temporarily, so download promptly
-- **File size limits:** Telegram Bot API caps file downloads at 20MB
-- **Drive upload:** `MediaInMemoryUpload` for small files, `MediaIoBaseUpload` with streaming for larger ones
-- **Handler changes:** Broaden filters to include `filters.PHOTO`, `filters.VIDEO`, `filters.AUDIO`, `filters.Document.ALL`. Each type exposes file IDs differently (`message.photo[-1].file_id` for highest-res photo, `message.document.file_id` for documents, etc.)
-- **Downstream compatibility:** The markdown format should match what the second brain processing service expects — simple Drive links are the most portable option
-
-### Priority
-
-1. **Batching** — most immediate reliability and performance gain
-2. **Stateless** — matters when deploying multiple instances or moving to serverless
-3. **Media support** — biggest feature expansion, most implementation work
-
-## Development
-
-See `CLAUDE.md` for technical details, architecture decisions, and implementation roadmap.
+- [DEVELOPMENT.md](DEVELOPMENT.md) — local setup, running each mode, tests
+- [DEPLOY.md](DEPLOY.md) — Fly.io deployment for both the bot and the
+  nightly summarizer job
+- [CLAUDE.md](CLAUDE.md) — technical reference for AI coding agents
+- [CONTEXT.md](CONTEXT.md) — canonical domain terms
+- `docs/adr/` — architecture decision records
 
 ## License
 
@@ -247,4 +269,5 @@ MIT License
 
 ---
 
-Built for capturing ideas and building a personal knowledge base, one message at a time.
+Built for capturing ideas in the moment and turning them into a searchable
+knowledge base, one message at a time.

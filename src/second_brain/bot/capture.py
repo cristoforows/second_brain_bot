@@ -1,0 +1,348 @@
+"""
+Google Drive handler for creating and managing markdown files.
+Handles file creation, message appending, and message editing in Drive.
+"""
+
+import logging
+import re
+from datetime import datetime, timezone
+
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaInMemoryUpload
+
+from second_brain.bot.google_auth import get_google_service, TokenStorage
+from second_brain.core.config import config
+from second_brain.core.timeutil import capture_date
+
+logger = logging.getLogger(__name__)
+
+MARKDOWN_MIME_TYPE = 'text/markdown'
+FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder'
+
+# Regex to match comment-style message blocks
+# <!-- msg_id: 12345 | from: @username | date: 2024-02-10 14:30:00 -->
+MESSAGE_PATTERN = re.compile(
+    r'<!-- msg_id: (\d+) -->\n'
+)
+
+
+def get_drive_service(user_id: int, token_storage: TokenStorage):
+    """Get an authenticated Google Drive API service for a user."""
+    return get_google_service(user_id, token_storage, 'drive', 'v3')
+
+def get_or_create_folder(service, folder_name: str) -> str | None:
+    """Find existing folder or create a new one in Drive.
+    """
+    try:
+        results = service.files().list(
+            q=f"name='{folder_name}' and mimeType='{FOLDER_MIME_TYPE}' and trashed=false",
+            spaces='drive',
+            fields='files(id, name)',
+        ).execute()
+        folders = results.get('files', [])
+        if folders:
+            folder_id = folders[0]['id']
+            logger.info(f"Found existing folder: {folder_name} (ID: {folder_id})")
+            return folder_id
+
+        # Create new folder
+        file_metadata = {
+            'name': folder_name,
+            'mimeType': FOLDER_MIME_TYPE,
+        }
+        folder = service.files().create(
+            body=file_metadata,
+            fields='id',
+        ).execute()
+        folder_id = folder.get('id')
+        logger.info(f"Created new folder: {folder_name} (ID: {folder_id})")
+        return folder_id
+    except Exception as e:
+        logger.error(f"Failed to get/create folder: {e}")
+        return None
+
+def verify_folder(service, folder_id: str) -> bool:
+    """Confirm a Drive folder id exists, isn't trashed, and is actually a folder.
+
+    Used when the knowledge folder is pinned by id (KNOWLEDGE_FOLDER_ID) —
+    unlike name lookup, an id lookup gives no natural "not found" signal, so
+    this catches a wrong/stale/inaccessible id explicitly.
+    """
+    try:
+        meta = service.files().get(fileId=folder_id, fields='mimeType, trashed').execute()
+        return not meta.get('trashed', False) and meta.get('mimeType') == FOLDER_MIME_TYPE
+    except Exception as e:
+        logger.error(f"Failed to verify folder {folder_id}: {e}")
+        return False
+
+
+def find_folder(service, folder_name: str) -> str | None:
+    """Look up a Drive folder by name without creating it if missing.
+
+    Used for folders the bot doesn't own (e.g. the knowledge folder written
+    by the external second-brain service) — unlike `get_or_create_folder`,
+    a miss here means "not there yet", not "make one".
+    """
+    try:
+        results = service.files().list(
+            q=f"name='{folder_name}' and mimeType='{FOLDER_MIME_TYPE}' and trashed=false",
+            spaces='drive',
+            fields='files(id, name)',
+        ).execute()
+        folders = results.get('files', [])
+        return folders[0]['id'] if folders else None
+    except Exception as e:
+        logger.error(f"Failed to find folder: {e}")
+        return None
+
+
+def get_or_create_markdown_file(service, folder_id: str, day_cutoff_hour: int = 0) -> str | None:
+    """Find existing markdown file or create a new one in Drive.
+
+    If the current hour (in `config.app_timezone`) is before `day_cutoff_hour`,
+    the file for the *previous* day is used instead. For example, with
+    day_cutoff_hour=4 a message sent at 02:30 local time is appended to
+    yesterday's file. Uses the configured timezone rather than the
+    container's local clock, so this behaves the same regardless of where
+    the process runs.
+
+    Returns the file ID.
+    """
+    target_date = capture_date(datetime.now(timezone.utc), config.app_timezone, day_cutoff_hour)
+    file_name = target_date.strftime('%Y-%m-%d') + '.md'
+    try:
+        # Search for existing file by name whithin the folder
+        results = service.files().list(
+            q=f"name='{file_name}' and mimeType='{MARKDOWN_MIME_TYPE}' and trashed=false and parents='{folder_id}'",
+            spaces='drive',
+            fields='files(id, name)',
+        ).execute()
+        files = results.get('files', [])
+        if files:
+            file_id = files[0]['id']
+            logger.info(f"Found existing file: {file_name} (ID: {file_id})")
+            return file_id
+
+        # Create new file
+        file_metadata = {
+            'name': file_name,
+            'parents': [folder_id],
+            'mimeType': MARKDOWN_MIME_TYPE,
+        }
+        initial_content = f"# Telegram Messages\n\n"
+        media = MediaInMemoryUpload(
+            initial_content.encode('utf-8'),
+            mimetype=MARKDOWN_MIME_TYPE,
+        )
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id',
+        ).execute()
+        file_id = file.get('id')
+
+        logger.info(f"Created new file: {file_name} (ID: {file_id})")
+        return file_id
+    except Exception as e:
+        logger.error(f"Failed to get/create markdown file: {e}")
+        return None
+
+
+def append_message(
+    service,
+    file_id: str,
+    message_id: int,
+    content: str,
+    timestamp: datetime,
+    username: str,
+) -> bool:
+    """Append a new message to the markdown file in Drive."""
+    try:
+        # Download current file content
+        logger.info(f"Downloading file content for file {file_id}")
+        current_content = _download_file_content(service, file_id)
+        if current_content is None:
+            return False
+
+        # Format the new message block
+        message_block = _format_message_block(message_id, content)
+
+        # Append to content
+        updated_content = current_content + message_block
+
+        # Upload updated file
+        return _upload_file_content(service, file_id, updated_content)
+
+    except Exception as e:
+        logger.error(f"Failed to append message {message_id}: {e}")
+        return False
+
+
+def update_message(
+    service,
+    file_id: str,
+    message_id: int,
+    new_content: str,
+    edit_timestamp: datetime,
+) -> bool:
+    """Update an existing message in the markdown file (for edited messages)."""
+    try:
+        current_content = _download_file_content(service, file_id)
+        if current_content is None:
+            return False
+
+        updated_content = _replace_message_content(
+            current_content, message_id, new_content, edit_timestamp
+        )
+
+        if updated_content is None:
+            logger.warning(f"Message {message_id} not found in file for update")
+            return False
+
+        return _upload_file_content(service, file_id, updated_content)
+
+    except Exception as e:
+        logger.error(f"Failed to update message {message_id}: {e}")
+        return False
+
+
+def delete_message(
+    service,
+    file_id: str,
+    message_id: int,
+) -> bool:
+    """Delete a message from the markdown file. Silently succeeds if message not found."""
+    try:
+        current_content = _download_file_content(service, file_id)
+        if current_content is None:
+            return False
+
+        updated_content = _remove_message_block(current_content, message_id)
+        if updated_content is None:
+            logger.info(f"Message {message_id} not found in file, ignoring deletion")
+            return True
+
+        return _upload_file_content(service, file_id, updated_content)
+
+    except Exception as e:
+        logger.error(f"Failed to delete message {message_id}: {e}")
+        return False
+
+
+def _format_message_block(message_id: int, content: str) -> str:
+    """Format a message as a comment-style markdown block."""
+    return f"<!-- msg_id: {message_id} -->\n{content}\n"
+
+
+def _remove_message_block(file_content: str, message_id: int) -> str | None:
+    """Find and remove a message block by ID from the file content.
+
+    Returns updated content, or None if message not found.
+    """
+    pattern = re.compile(rf'<!-- msg_id: {message_id} -->\n')
+    match = pattern.search(file_content)
+    if not match:
+        return None
+
+    block_start = match.start()
+    header_end = match.end()
+
+    next_match = MESSAGE_PATTERN.search(file_content, header_end)
+    block_end = next_match.start() if next_match else len(file_content)
+
+    return file_content[:block_start] + file_content[block_end:]
+
+
+def _replace_message_content(
+    file_content: str, message_id: int, new_content: str, edit_timestamp: datetime
+) -> str | None:
+    """Find and replace a message by ID in the file content.
+
+    Returns updated content, or None if message not found.
+    """
+    # Find the message header by ID
+    pattern = re.compile(
+        rf'<!-- msg_id: {message_id} -->\n'
+    )
+
+    match = pattern.search(file_content)
+    if not match:
+        return None
+
+    header_start = match.start()
+    header_end = match.end()
+
+    # Find the end of this message's content (next comment block or end of file)
+    next_match = MESSAGE_PATTERN.search(file_content, header_end)
+    content_end = next_match.start() if next_match else len(file_content)
+
+    # Build updated block with edited timestamp
+    new_header = f"<!-- msg_id: {message_id} -->\n"
+    new_block = f"{new_header}{new_content}\n"
+
+    return file_content[:header_start] + new_block + file_content[content_end:]
+
+
+def list_folder_contents(service, folder_id: str) -> list[dict]:
+    """Return a folder's direct children as [{id, name, mimeType}, ...] (read-only).
+
+    Includes both files and subfolders of any type — the vault the /search
+    agent walks is a nested tree (Directory.yaml per folder, notes cross-linked
+    across folders), not a flat list of markdown files.
+    """
+    try:
+        results = service.files().list(
+            q=f"trashed=false and '{folder_id}' in parents",
+            spaces='drive',
+            fields='files(id, name, mimeType)',
+            pageSize=1000,
+        ).execute()
+        return results.get('files', [])
+    except Exception as e:
+        logger.error(f"Failed to list folder contents: {e}")
+        return []
+
+
+def read_file(service, file_id: str) -> str | None:
+    """Public read of a Drive file's text content, or None on failure."""
+    return _download_file_content(service, file_id)
+
+
+def _download_file_content(service, file_id: str) -> str | None:
+    """Download a file's content from Drive."""
+    try:
+        content = service.files().get_media(fileId=file_id).execute()
+    except HttpError as e:
+        # Docs Editors files (the vault's notes) hold no binary content and
+        # 403 on get_media; they only come out via export.
+        if 'fileNotDownloadable' not in str(e):
+            logger.error(f"Failed to download file {file_id}: {e}")
+            return None
+        try:
+            content = service.files().export(
+                fileId=file_id, mimeType='text/plain'
+            ).execute()
+        except Exception as e:
+            logger.error(f"Failed to export file {file_id}: {e}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to download file {file_id}: {e}")
+        return None
+    return content.decode('utf-8') if isinstance(content, bytes) else content
+
+
+def _upload_file_content(service, file_id: str, content: str) -> bool:
+    """Upload updated content to a Drive file."""
+    try:
+        media = MediaInMemoryUpload(
+            content.encode('utf-8'),
+            mimetype=MARKDOWN_MIME_TYPE,
+        )
+        service.files().update(
+            fileId=file_id,
+            media_body=media,
+        ).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to upload file {file_id}: {e}")
+        return False

@@ -1,0 +1,432 @@
+"""/timebox conversation: collect next-day tasks and publish a schedule.
+
+Thin Telegram glue only — session state, keyboards, and I/O. All scheduling
+judgment lives in scheduler; all calendar I/O lives in calendar_handler.
+
+Flow:
+  /timebox -> pick Office/WFH -> (if a schedule already exists for the target
+  day) confirm redo -> collect tasks -> /done -> generate -> clear-then-write
+  to the Target Calendar -> reply with per-event status.
+"""
+
+import asyncio
+import logging
+from datetime import date, datetime, timezone
+from functools import lru_cache
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ReactionEmoji
+from telegram.ext import (
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+
+from second_brain.core.config import config
+from second_brain.bot.google_auth import has_calendar_scope
+from second_brain.bot import calendar_handler
+from second_brain.bot import timebox_planner as scheduler
+
+logger = logging.getLogger(__name__)
+
+CHOOSING_MODE, COLLECTING, CONFIRM_REDO, ASK_START = range(4)
+SESSION_TIMEOUT_SECONDS = 30 * 60
+_TASKS_KEY = "timebox_tasks"
+_MODE_KEY = "timebox_mode"
+_DATE_KEY = "timebox_date"
+_START_KEY = "timebox_start"
+_DEFAULT_START = "09:00"
+
+_COLLECT_PROMPT = (
+    "Send tomorrow's tasks, one per message — optionally with a duration or "
+    'constraint (e.g. "deep work 90m, morning").\n\n'
+    "/done - finish and publish your schedule\n"
+    "/cancel - abort the session\n\n"
+    "Messages in this session are not saved to Drive. "
+    "The session expires after 30 minutes of silence."
+)
+
+
+def _day_config(start_override: str | None = None) -> scheduler.DayConfig:
+    """Build the planner's fixed-block config from environment settings.
+
+    start_override replaces the day's start time (used by non-working days,
+    where the user picks their own start)."""
+    return scheduler.DayConfig(
+        day_start=start_override or config.timebox_day_start,
+        day_end=config.timebox_day_end,
+        lunch=config.timebox_lunch,
+        dinner=config.timebox_dinner,
+        eat_duration_min=config.timebox_eat_duration,
+        commute_morning=config.timebox_commute_morning,
+        commute_evening=config.timebox_commute_evening,
+        commute_duration_min=config.timebox_commute_duration,
+        work_start=config.timebox_work_start,
+        work_end=config.timebox_work_end,
+        work_end_hard=config.timebox_work_end_hard,
+    )
+
+
+def _parse_time(text: str) -> str | None:
+    """Parse a 24-hour time into "HH:MM", or None if unreadable.
+
+    Accepts compact digits (900->09:00, 1300->13:00, 0930->09:30) and colon
+    form (9:00, 13:30). Rejects fewer than 3 digits (ambiguous) and any
+    out-of-range hour/minute."""
+    s = text.strip()
+    if ":" in s:
+        parts = s.split(":")
+        if len(parts) != 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+            return None
+        hour, minute = int(parts[0]), int(parts[1])
+    elif s.isdigit() and 3 <= len(s) <= 4:
+        hour, minute = int(s[:-2]), int(s[-2:])
+    else:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+async def _begin_collection(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start task collection. On a non-working day, first ask for a start time."""
+    context.user_data[_TASKS_KEY] = {}
+    mode = context.user_data.get(_MODE_KEY, "wfh")
+    if mode == "nonworking":
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(f"Start {_DEFAULT_START}", callback_data="start:default")]]
+        )
+        await query.edit_message_text(
+            "Non-working day — what time do you want to start? Send a 24-hour "
+            "time like 900 or 1330, or tap the button for the default.",
+            reply_markup=keyboard,
+        )
+        return ASK_START
+    await query.edit_message_text(f"Mode: {mode}. {_COLLECT_PROMPT}")
+    return COLLECTING
+
+
+async def start_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle /timebox - authenticate, then ask for today's mode."""
+    token_storage = context.bot_data.get("token_storage")
+    user_id = update.effective_user.id
+
+    # Auth gate doubles as access control for paid LLM calls
+    if not token_storage or not token_storage.is_authenticated(user_id):
+        await update.message.reply_text(
+            "Please authenticate with Google Drive first using /authenticate"
+        )
+        return ConversationHandler.END
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🏢 Office", callback_data="mode:office"),
+                InlineKeyboardButton("🏠 WFH", callback_data="mode:wfh"),
+            ],
+            [InlineKeyboardButton("🌴 Day off", callback_data="mode:nonworking")],
+        ]
+    )
+    await update.message.reply_text(
+        "Timebox session — what kind of day is tomorrow?", reply_markup=keyboard
+    )
+    logger.info(f"Timebox session started for user {user_id}")
+    return CHOOSING_MODE
+
+
+async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle the Office/WFH choice: pin the target date, check for an existing
+    schedule, and either ask to redo or begin collecting."""
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    token_storage = context.bot_data.get("token_storage")
+
+    mode = query.data.split(":", 1)[1]
+    context.user_data[_MODE_KEY] = mode
+
+    target_date = scheduler.compute_target_date(
+        datetime.now(timezone.utc), config.app_timezone, config.timebox_cutoff_hour
+    )
+    context.user_data[_DATE_KEY] = target_date
+
+    # No calendar configured -> text-only mode, skip the existence check.
+    if not config.timebox_calendar_id:
+        context.user_data[_TASKS_KEY] = {}
+        await query.edit_message_text(f"Mode: {mode}. {_COLLECT_PROMPT}")
+        return COLLECTING
+
+    if not has_calendar_scope(user_id, token_storage):
+        await query.edit_message_text(
+            "Your login predates calendar support. Please re-run /authenticate "
+            "to grant Google Calendar access, then start /timebox again."
+        )
+        return ConversationHandler.END
+
+    service = calendar_handler.get_calendar_service(user_id, token_storage)
+    if service is None:
+        await query.edit_message_text(
+            "Couldn't reach Google Calendar — please re-run /authenticate and try again."
+        )
+        return ConversationHandler.END
+
+    try:
+        exists = await asyncio.to_thread(
+            calendar_handler.has_existing_schedule,
+            service, config.timebox_calendar_id, target_date, config.app_timezone,
+            config.timebox_day_start,
+        )
+    except Exception as e:
+        logger.error(f"Calendar existence check failed for user {user_id}: {e}")
+        await query.edit_message_text(
+            "Couldn't check your calendar right now — please try /timebox again shortly."
+        )
+        return ConversationHandler.END
+
+    if exists:
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("♻️ Redo", callback_data="redo:yes"),
+                InlineKeyboardButton("✋ Keep existing", callback_data="redo:no"),
+            ]]
+        )
+        await query.edit_message_text(
+            f"A schedule already exists for {target_date.strftime('%A, %d %b')}. "
+            "Redo it (overwrites) or keep the existing one?",
+            reply_markup=keyboard,
+        )
+        return CONFIRM_REDO
+
+    return await _begin_collection(query, context)
+
+
+async def confirm_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle the redo confirmation: keep the existing schedule or collect anew."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "redo:no":
+        await query.edit_message_text("Keeping your existing schedule. Session ended.")
+        return ConversationHandler.END
+
+    return await _begin_collection(query, context)
+
+
+async def start_from_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle the default-start button on a non-working day."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data[_START_KEY] = _DEFAULT_START
+    await query.edit_message_text(f"Starting at {_DEFAULT_START}. {_COLLECT_PROMPT}")
+    return COLLECTING
+
+
+async def set_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Parse the user's free-text start time; re-ask on unreadable input."""
+    parsed = _parse_time(update.message.text)
+    if parsed is None:
+        await update.message.reply_text(
+            "Couldn't read that — send a 24-hour time like 900 or 1330."
+        )
+        return ASK_START
+    context.user_data[_START_KEY] = parsed
+    await update.message.reply_text(f"Starting at {parsed}. {_COLLECT_PROMPT}")
+    return COLLECTING
+
+
+async def collect_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Buffer one task message verbatim and acknowledge with a 👍 reaction.
+
+    Keyed by message_id (not appended to a list) so a later edit to the same
+    message can update it in place via edit_task."""
+    context.user_data.setdefault(_TASKS_KEY, {})[update.message.message_id] = update.message.text
+    await update.message.set_reaction(ReactionEmoji.THUMBS_UP)
+    return COLLECTING
+
+
+async def edit_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Update a buffered task in place when its source message is edited.
+
+    Session messages never reach Drive (see _COLLECT_PROMPT) — an edit to a
+    message from outside this session's buffer (e.g. an older message sent
+    before /timebox started) is silently ignored rather than falling through
+    to the normal Drive-edit route, consistent with that same rule."""
+    message = update.edited_message
+    tasks = context.user_data.get(_TASKS_KEY) or {}
+    if message.message_id in tasks:
+        tasks[message.message_id] = message.text
+        await message.set_reaction(ReactionEmoji.THUMBS_UP)
+    return COLLECTING
+
+
+@lru_cache(maxsize=1)
+def _llm():
+    return scheduler.create_llm(
+        api_key=config.openrouter_api_key, model=config.llm_model
+    )
+
+
+def _render_published(result, write_results, target_date: date) -> str:
+    """Render the schedule with a ✅/❌ per slot reflecting calendar writes."""
+    lines = [f"Timebox for {target_date.strftime('%A, %d %b %Y')}", ""]
+    for item, wr in zip(result.schedule, write_results):
+        mark = "✅" if wr.ok else "❌"
+        line = f"{mark} {item.start}-{item.end}  {item.task}"
+        if item.note:
+            line += f" ({item.note})"
+        lines.append(line)
+
+    failed = sum(1 for wr in write_results if not wr.ok)
+    total = len(write_results)
+    lines.append("")
+    if failed:
+        lines.append(f"⚠️ {failed}/{total} events failed — send /done to retry.")
+    else:
+        lines.append(f"Added {total} events to your calendar.")
+
+    lines.extend(scheduler.dropped_notice_lines(result))
+    return "\n".join(lines)
+
+
+async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle /done - generate the schedule and publish it to the calendar."""
+    tasks = context.user_data.get(_TASKS_KEY) or {}
+    if not tasks:
+        await update.message.reply_text("No tasks collected — timebox session ended.")
+        return ConversationHandler.END
+
+    await update.message.reply_text("⏳ Building your schedule — this can take a bit, hang tight...")
+
+    user_id = update.effective_user.id
+    mode = context.user_data.get(_MODE_KEY, "wfh")
+    target_date = context.user_data.get(_DATE_KEY) or scheduler.compute_target_date(
+        datetime.now(timezone.utc), config.app_timezone, config.timebox_cutoff_hour
+    )
+    start_override = context.user_data.get(_START_KEY)
+
+    try:
+        # to_thread: the langchain call is sync; don't block the event loop
+        day = _day_config(start_override)
+        result = await asyncio.to_thread(
+            scheduler.generate_schedule, list(tasks.values()), target_date, _llm(), day, mode
+        )
+    except scheduler.ScheduleGenerationError:
+        logger.error(f"Schedule generation failed twice for user {user_id}")
+        # Buffer stays intact; the session stays open so /done retries as-is
+        await update.message.reply_text(
+            "Scheduling failed — your tasks are still saved. "
+            "Send /done again to retry, or /cancel to abort."
+        )
+        return COLLECTING
+
+    # No calendar configured: reply text only and end.
+    if not config.timebox_calendar_id:
+        context.user_data.pop(_TASKS_KEY, None)
+        context.user_data.pop(_START_KEY, None)
+        await update.message.reply_text(scheduler.render_schedule(result, target_date))
+        return ConversationHandler.END
+
+    token_storage = context.bot_data.get("token_storage")
+    service = calendar_handler.get_calendar_service(user_id, token_storage)
+    if service is None:
+        await update.message.reply_text(
+            "Schedule is ready but Google Calendar is unreachable — please re-run "
+            "/authenticate. Your tasks are kept; send /done to retry.\n\n"
+            + scheduler.render_schedule(result, target_date)
+        )
+        return COLLECTING
+
+    try:
+        # Clear-then-write: idempotent regardless of redo or a prior partial /done.
+        # Bounded at day_start so a late-night event that crossed midnight into
+        # target_date (see calendar_handler._slot_to_datetimes) is left alone —
+        # it belongs to the previous day's schedule, not this one.
+        await asyncio.to_thread(
+            calendar_handler.clear_timebox_events,
+            service, config.timebox_calendar_id, target_date, config.app_timezone,
+            start_override or config.timebox_day_start,
+        )
+        write_results = await asyncio.to_thread(
+            calendar_handler.write_schedule,
+            service, config.timebox_calendar_id, result.schedule, target_date,
+            config.app_timezone,
+        )
+    except Exception as e:
+        logger.error(f"Calendar publish failed for user {user_id}: {e}")
+        await update.message.reply_text(
+            "Couldn't publish to your calendar — your tasks are kept. "
+            "Send /done to retry, or /cancel to abort.\n\n"
+            + scheduler.render_schedule(result, target_date)
+        )
+        return COLLECTING
+
+    reply = _render_published(result, write_results, target_date)
+    if any(not wr.ok for wr in write_results):
+        # Keep the buffer open so /done can retry the failed slots (clear-then-write).
+        await update.message.reply_text(reply)
+        return COLLECTING
+
+    context.user_data.pop(_TASKS_KEY, None)
+    context.user_data.pop(_START_KEY, None)
+    await update.message.reply_text(reply)
+    logger.info(
+        f"Timebox schedule for {target_date} published for user {user_id}: "
+        f"{len(write_results)} events, {len(result.dropped)} dropped"
+    )
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle /cancel - abort the session and clear the buffer."""
+    context.user_data.pop(_TASKS_KEY, None)
+    context.user_data.pop(_START_KEY, None)
+    await update.message.reply_text("Timebox session cancelled.")
+    return ConversationHandler.END
+
+
+async def expire(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Notify the user when the session times out; the buffer is discarded."""
+    context.user_data.pop(_TASKS_KEY, None)
+    context.user_data.pop(_START_KEY, None)
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "Timebox session expired after 30 minutes of inactivity. "
+            "Your messages are saved to Drive as usual again; "
+            "send /timebox to start over."
+        )
+    logger.info(f"Timebox session expired for user {update.effective_user.id}")
+
+
+def build_timebox_handler() -> ConversationHandler:
+    """Build the /timebox ConversationHandler.
+
+    Must be registered before the catch-all save-to-Drive handlers so that
+    session messages are diverted from the Drive pipeline. /done and /cancel
+    are handled inside the conversation's own states, not as global commands.
+    """
+    task_message = filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND
+    task_message_edit = filters.UpdateType.EDITED_MESSAGE & filters.TEXT & ~filters.COMMAND
+    return ConversationHandler(
+        entry_points=[CommandHandler("timebox", start_session)],
+        states={
+            CHOOSING_MODE: [CallbackQueryHandler(choose_mode, pattern=r"^mode:")],
+            CONFIRM_REDO: [CallbackQueryHandler(confirm_redo, pattern=r"^redo:")],
+            ASK_START: [
+                CallbackQueryHandler(start_from_button, pattern=r"^start:"),
+                CommandHandler("cancel", cancel),
+                MessageHandler(task_message, set_start_time),
+            ],
+            COLLECTING: [
+                CommandHandler("done", done),
+                CommandHandler("cancel", cancel),
+                MessageHandler(task_message, collect_task),
+                MessageHandler(task_message_edit, edit_task),
+            ],
+            ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, expire)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        conversation_timeout=SESSION_TIMEOUT_SECONDS,
+    )
