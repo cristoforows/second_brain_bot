@@ -147,6 +147,32 @@ class Settings(BaseSettings):
     # instead of the job simply vanishing when the external timeout SIGKILLs it.
     summarizer_max_seconds: int = Field(default=2100, validation_alias="SUMMARIZER_MAX_SECONDS")
 
+    # ------------------------------------------------------------------
+    # Fly Machines API (nightly-trigger endpoint creates the job machine)
+    # ------------------------------------------------------------------
+    fly_api_base: str = Field(default="https://api.machines.dev", validation_alias="FLY_API_BASE")
+    fly_job_token: str = Field(default="", validation_alias="FLY_JOB_TOKEN")
+    # Injected by Fly into every machine — not something we set ourselves.
+    fly_app_name: str = Field(default="", validation_alias="FLY_APP_NAME")
+    fly_image_ref: str = Field(default="", validation_alias="FLY_IMAGE_REF")
+
+    # ------------------------------------------------------------------
+    # GitHub Actions OIDC allowlist (nightly-trigger endpoint)
+    # ------------------------------------------------------------------
+    nightly_oidc_audience: str = Field(
+        default="second-brain-bot-nightly", validation_alias="NIGHTLY_OIDC_AUDIENCE"
+    )
+    nightly_allowed_repository: str = Field(
+        default="cristoforows/second_brain_bot", validation_alias="NIGHTLY_ALLOWED_REPOSITORY"
+    )
+    nightly_allowed_ref: str = Field(
+        default="refs/heads/main", validation_alias="NIGHTLY_ALLOWED_REF"
+    )
+    nightly_allowed_workflow: str = Field(
+        default=".github/workflows/nightly-summary.yml",
+        validation_alias="NIGHTLY_ALLOWED_WORKFLOW",
+    )
+
     # --- Non-secrets (from config.yaml) ---
     llm: LLMConfig = Field(default_factory=LLMConfig)
     seed_categories: list[Category] = Field(default_factory=list)
