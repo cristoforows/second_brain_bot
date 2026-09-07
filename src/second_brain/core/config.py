@@ -150,17 +150,44 @@ class Settings(BaseSettings):
     # Pre-parse: config.yaml defaults, deprecated-env-var fallbacks
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_config_path() -> Path | None:
+        """Find config.yaml, in priority order: SECOND_BRAIN_CONFIG env var,
+        then ./config.yaml relative to the current working directory, then
+        the repo-root path next to pyproject.toml.
+
+        The repo-root fallback (`Path(__file__).resolve().parents[3]`) only
+        resolves correctly for an editable/src-layout install — a
+        non-editable install (a wheel unpacked into site-packages) would
+        never find it there. `./config.yaml` covers that case: the Docker
+        image and any real deployment run `second-brain` from a working
+        directory that has `config.yaml` copied alongside it.
+        """
+        candidates: list[Path] = []
+        env_path = os.environ.get("SECOND_BRAIN_CONFIG")
+        if env_path:
+            candidates.append(Path(env_path))
+        candidates.append(Path.cwd() / "config.yaml")
+        candidates.append(_PROJECT_ROOT / "config.yaml")
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return None
+
     @model_validator(mode="before")
     @classmethod
     def _load_yaml(cls, values: dict[str, Any]) -> dict[str, Any]:
-        config_path = _PROJECT_ROOT / "config.yaml"
-        if config_path.exists():
+        config_path = cls._resolve_config_path()
+        if config_path is not None:
             with open(config_path) as f:
                 yaml_data = yaml.safe_load(f) or {}
+            logger.info(f"Loaded config.yaml from {config_path}")
             # YAML values are defaults; explicit env/init values take precedence
             for key, val in yaml_data.items():
                 if key not in values or values[key] is None:
                     values[key] = val
+        else:
+            logger.info("No config.yaml found (checked SECOND_BRAIN_CONFIG, ./config.yaml, repo root); using LLMConfig defaults")
         return values
 
     @model_validator(mode="before")
