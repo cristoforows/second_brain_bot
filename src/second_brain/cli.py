@@ -57,8 +57,12 @@ def _sigalrm_handler(signum, frame) -> None:
 
 
 def _cmd_serve(_args: argparse.Namespace) -> int:
+    # Configure logging *before* the first get_settings() call — Settings
+    # construction itself logs which config.yaml it found (or that it found
+    # none), and that INFO line is silently dropped if no handler exists yet.
+    configure_bot_logging()
     settings = get_settings()
-    configure_bot_logging(settings.log_level)
+    configure_bot_logging(settings.log_level)  # reconfigure if LOG_LEVEL != INFO
     logger = logging.getLogger(__name__)
     from second_brain.bot.webhook import serve
 
@@ -74,6 +78,9 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
 
 
 def _cmd_poll(_args: argparse.Namespace) -> int:
+    # See _cmd_serve: configure logging before the first get_settings() call
+    # so Settings construction's own config.yaml-lookup log line is visible.
+    configure_bot_logging()
     settings = get_settings()
     configure_bot_logging(settings.log_level)
     logger = logging.getLogger(__name__)
@@ -107,6 +114,10 @@ def _cmd_poll(_args: argparse.Namespace) -> int:
 
 
 def _cmd_summarize(args: argparse.Namespace) -> int:
+    # Bootstrap logging before the first get_settings() call — Settings
+    # construction logs which config.yaml it found (or that it found none),
+    # and that line is silently dropped if no handler exists yet.
+    configure_logging()
     settings = get_settings()
     resolved_date = pipeline.resolve_date_str(args.date, settings.app_timezone)
 
@@ -152,6 +163,7 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
 
 
 def _cmd_index(args: argparse.Namespace) -> int:
+    configure_logging()  # bootstrap before get_settings() — see _cmd_summarize
     settings = get_settings()
     log_path = configure_logging(verbose=args.verbose, log_dir=settings.summarizer_log_dir)
     if log_path is not None:
@@ -164,6 +176,7 @@ def _cmd_index(args: argparse.Namespace) -> int:
 
 
 def _cmd_prompt(args: argparse.Namespace) -> int:
+    configure_logging()  # bootstrap before get_settings() — see _cmd_summarize
     settings = get_settings()
     log_path = configure_logging(verbose=args.verbose, log_dir=settings.summarizer_log_dir)
     if log_path is not None:
