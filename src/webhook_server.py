@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Webhook server for Telegram bot using Flask.
+Webhook server for Telegram bot using Flask, served in production by waitress
+(a production-grade WSGI server) instead of Flask's single-threaded dev server.
 Receives webhook updates from Telegram and processes them.
 """
 
@@ -8,11 +9,13 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import asyncio
 import hmac
 import json
 import threading
 
+import waitress
 from flask import Flask, request, Response, jsonify
 
 from config import config
@@ -354,13 +357,9 @@ def start_event_loop(loop):
 
 
 def _run_flask():
-    """Run the Flask dev server. Called on its own thread — see main()."""
-    app.run(
-        host='0.0.0.0',
-        port=config.webhook_port,
-        debug=False,  # Set to False in production
-        use_reloader=False,  # the reloader forks; not compatible with a non-main thread
-    )
+    """Run the app under waitress, a production-grade WSGI server. Called on
+    its own thread — see main()."""
+    waitress.serve(app, host='0.0.0.0', port=config.webhook_port, threads=8)
 
 
 def main():
@@ -374,10 +373,48 @@ def main():
     up. Binding the port first closes that gap; routes that need the
     deferred imports or bot_app/event_loop/token_storage guard on
     _bot_ready() for the window before this function finishes.
+
+    SIGTERM/SIGINT (Fly sends SIGINT on autostop) set stop_event so the main
+    loop exits and bot_app is stopped/shut down cleanly on its event loop —
+    without this, Fly's autostop used to log "This Application is still
+    running!" and a destroyed-pending-task warning on every suspend.
     """
     global bot_app, event_loop, token_storage
 
     logger.info("Starting Telegram bot in webhook mode...")
+
+    stop_event = threading.Event()
+    shutdown_attempted = False
+
+    def _shutdown_bot() -> None:
+        """Stop and shut down bot_app on its event loop, then stop the loop.
+
+        Idempotent — safe to call from both the normal exit path and the
+        finally block; only the first call does anything. Never raises: any
+        failure is logged and swallowed so shutdown always completes.
+        """
+        nonlocal shutdown_attempted
+        if shutdown_attempted:
+            return
+        shutdown_attempted = True
+
+        if bot_app is not None and event_loop is not None:
+            for step_name, coro_factory in (('stop', bot_app.stop), ('shutdown', bot_app.shutdown)):
+                try:
+                    asyncio.run_coroutine_threadsafe(coro_factory(), event_loop).result(timeout=10)
+                except Exception as e:
+                    logger.error(f"Error during bot_app.{step_name}(): {e}")
+            try:
+                event_loop.call_soon_threadsafe(event_loop.stop)
+            except Exception as e:
+                logger.error(f"Error stopping event loop: {e}")
+
+    def _handle_stop_signal(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _handle_stop_signal)
+    signal.signal(signal.SIGINT, _handle_stop_signal)
 
     logger.info(f"Starting Flask server on port {config.webhook_port}...")
     flask_thread = threading.Thread(target=_run_flask, daemon=True)
@@ -422,22 +459,22 @@ def main():
 
         # Flask itself runs on flask_thread; block here so the process stays
         # alive and a crashed Flask thread is noticed instead of running on
-        # silently with a dead server.
-        while flask_thread.is_alive():
+        # silently with a dead server. Also exits once a stop signal arrives.
+        while flask_thread.is_alive() and not stop_event.is_set():
             flask_thread.join(timeout=1)
-        logger.critical("Flask server thread exited unexpectedly")
+
+        if stop_event.is_set():
+            logger.info("Stop signal received, shutting down...")
+            _shutdown_bot()
+        else:
+            logger.critical("Flask server thread exited unexpectedly")
 
     except Exception as e:
         logger.critical(f"Failed to start webhook server: {e}")
         raise
     finally:
-        # Clean up on exit
-        if bot_app and event_loop:
-            try:
-                asyncio.run_coroutine_threadsafe(bot_app.shutdown(), event_loop).result(timeout=5)
-            except Exception as e:
-                logger.error(f"Error during shutdown: {e}")
-            event_loop.call_soon_threadsafe(event_loop.stop)
+        # Clean up on exit — no-op if _shutdown_bot() already ran above.
+        _shutdown_bot()
 
 
 if __name__ == '__main__':
