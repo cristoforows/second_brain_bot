@@ -3,20 +3,35 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "second-brain-summarizer"
+name = "second-brain"
 version = "0.1.0"
-description = "AI agent that summarizes and categorizes messages into a living document structure"
+description = "Telegram capture bot + AI agent that summarizes and organizes messages into a living knowledge base"
 requires-python = ">=3.11"
 dependencies = [
+    # Telegram bot — job-queue extra powers ConversationHandler timeouts (/timebox session expiry)
+    "python-telegram-bot[job-queue]==22.6",
+    "python-dotenv>=1.0,<2",
+    "flask==3.0.0",
+    "waitress>=3.0,<4",
+
+    # Google APIs (Drive, Calendar, OAuth)
+    "google-auth>=2.28.0,<3",
+    "google-auth-oauthlib>=1.2.0,<2",
+    "google-auth-httplib2>=0.2.0",
+    "google-api-python-client>=2.116.0,<3",
+
+    # Bot token storage (Postgres) + encryption
+    "psycopg2-binary>=2.9.9",
+    "cryptography>=42.0.0",
+
+    # LLM stack shared by /timebox, /search, and the summarizer agent
     "langchain>=0.3,<0.4",
     "langchain-openai>=0.3,<0.4",
     "langgraph>=0.2,<0.4",
-    "google-api-python-client>=2.100,<3",
-    "google-auth>=2.20,<3",
-    "google-auth-oauthlib>=1.0,<2",
+
+    # Settings + summarizer config/logging
     "pydantic-settings>=2.0,<3",
     "pyyaml>=6.0,<7",
-    "python-dotenv>=1.0,<2",
     "structlog>=24.0,<26",
     "httpx>=0.27,<1",
 ]
@@ -28,7 +43,7 @@ dev = [
 ]
 
 [project.scripts]
-second-brain = "second_brain.main:main"
+second-brain = "second_brain.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/second_brain"]

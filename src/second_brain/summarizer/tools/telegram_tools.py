@@ -3,37 +3,43 @@ from __future__ import annotations
 import structlog
 from langchain_core.tools import tool
 
-from second_brain.services.telegram import TelegramService
+from second_brain.core.notify import send_telegram
 
 log = structlog.get_logger()
 
-_telegram: TelegramService | None = None
 _dry_run: bool = False
 _default_chat_id: str = ""
+_enabled: bool = False
 
 
-def init_tools(telegram: TelegramService, default_chat_id: str, dry_run: bool = False) -> None:
-    global _telegram, _dry_run, _default_chat_id
-    _telegram = telegram
+def init_tools(default_chat_id: str, dry_run: bool = False) -> None:
+    """Configure the default notification target.
+
+    Sends go straight through the bot's own Telegram token
+    (`second_brain.core.notify`) now that the summarizer runs in the same
+    process/image as the bot — there's no separate service to initialize.
+    """
+    global _dry_run, _default_chat_id, _enabled
     _dry_run = dry_run
     _default_chat_id = default_chat_id
+    _enabled = bool(default_chat_id)
 
 
 def get_all_tools() -> list:
-    if _telegram is None:
+    if not _enabled:
         return []
     return [send_telegram_message]
 
 
 def send_notification(text: str) -> None:
-    """Send a message to the default chat_id, silently skipping if Telegram isn't configured."""
-    if not _telegram or not _default_chat_id:
+    """Send a message to the default chat_id, silently skipping if unconfigured."""
+    if not _default_chat_id:
         return
     if _dry_run:
         log.info("telegram_notification_dry_run", text=text[:100])
         return
     try:
-        _telegram.send_message(_default_chat_id, text)
+        send_telegram(_default_chat_id, text)
     except Exception as e:
         log.error("telegram_notification_failed", error=str(e))
 
@@ -50,15 +56,13 @@ def send_telegram_message(text: str, chat_id: str = "") -> str:
 
     Returns a confirmation string, or an error message if the request fails.
     """
-    if _telegram is None:
-        return "Telegram is not configured."
     target = chat_id or _default_chat_id
     if not target:
         return "No chat_id provided and no default configured."
     if _dry_run:
         return f"[dry-run] would send to {target}: {text}"
     try:
-        _telegram.send_message(target, text)
+        send_telegram(target, text)
         return f"Message sent to {target}."
     except Exception as e:
         log.error("telegram_send_failed", chat_id=target, error=str(e))

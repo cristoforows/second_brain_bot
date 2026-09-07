@@ -2,32 +2,45 @@ from __future__ import annotations
 
 from langchain_openai import ChatOpenAI
 
-from second_brain.core.config import Settings
-
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
-def create_llm(settings: Settings) -> ChatOpenAI:
+def create_llm(
+    api_key: str,
+    model: str,
+    *,
+    timeout: float,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    provider: dict | None = None,
+) -> ChatOpenAI:
     """Create a ChatOpenAI instance pointed at OpenRouter.
 
-    The model and provider routing are configurable via ``config.yaml``.
-    The optional ``provider`` block maps directly to OpenRouter's provider
-    selection object (order, ignore, allow_fallbacks, etc.).
+    The only place `ChatOpenAI` is constructed in this codebase. Callers pass
+    their own `timeout` (the bot's /timebox and /search use 120s; the
+    summarizer's long-running pipeline uses 1800s). `provider`, `max_tokens`,
+    and `temperature` are optional — the summarizer passes them from
+    `config.yaml`'s `llm` block; the bot's /timebox and /search leave them
+    unset.
     """
-    if not settings.openrouter_api_key:
+    if not api_key:
         raise ValueError(
             "OPENROUTER_API_KEY is not set. Add it to your .env file or GitHub secret."
         )
-    extra_body: dict = {}
-    if settings.llm.provider:
-        extra_body["provider"] = settings.llm.provider
-    extra_body["include_reasoning"] = False
-    return ChatOpenAI(
-        model=settings.llm.model,
-        temperature=settings.llm.temperature,
-        max_tokens=settings.llm.max_tokens,
-        openai_api_key=settings.openrouter_api_key,
+    extra_body: dict = {"include_reasoning": False}
+    if provider:
+        extra_body["provider"] = provider
+
+    kwargs: dict = dict(
+        model=model,
+        openai_api_key=api_key,
         openai_api_base=_OPENROUTER_BASE_URL,
         extra_body=extra_body,
-        request_timeout=1800,
+        request_timeout=timeout,
     )
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+
+    return ChatOpenAI(**kwargs)

@@ -18,7 +18,7 @@ import threading
 import waitress
 from flask import Flask, request, Response, jsonify
 
-from config import config
+from second_brain.core.config import config
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -28,10 +28,10 @@ app = Flask(__name__)
 
 # The rest of the bot stack (python-telegram-bot, and transitively Drive,
 # Calendar, and the langchain-based /timebox LLM client) is heavy to import —
-# on Fly's machine this took ~7s, all before main() could even run, since
+# on Fly's machine this took ~7s, all before serve() could even run, since
 # plain top-level imports resolve before any of our code executes. These
-# names are populated by _load_bot_modules(), called from main() *after*
-# Flask has already started accepting connections (see main()). Every route
+# names are populated by _load_bot_modules(), called from serve() *after*
+# Flask has already started accepting connections (see serve()). Every route
 # that touches them gates on _bot_ready() first, so a request arriving before
 # they're loaded gets a clean 503 instead of a NameError.
 Update = None
@@ -46,7 +46,7 @@ TokenStorage = None
 
 
 def _load_bot_modules() -> None:
-    """Import the heavy bot stack. Call once, from main(), before anything
+    """Import the heavy bot stack. Call once, from serve(), before anything
     below needs these names."""
     global Update, BadRequest, Forbidden, TelegramError, Application
     global register_handlers, handle_deleted_message, handle_oauth_callback, TokenStorage
@@ -54,8 +54,8 @@ def _load_bot_modules() -> None:
     from telegram import Update as _Update
     from telegram.error import BadRequest as _BadRequest, Forbidden as _Forbidden, TelegramError as _TelegramError
     from telegram.ext import Application as _Application
-    from bot import register_handlers as _register_handlers, handle_deleted_message as _handle_deleted_message
-    from google_auth import handle_oauth_callback as _handle_oauth_callback, TokenStorage as _TokenStorage
+    from second_brain.bot.handlers import register_handlers as _register_handlers, handle_deleted_message as _handle_deleted_message
+    from second_brain.bot.google_auth import handle_oauth_callback as _handle_oauth_callback, TokenStorage as _TokenStorage
 
     Update = _Update
     BadRequest, Forbidden, TelegramError = _BadRequest, _Forbidden, _TelegramError
@@ -107,9 +107,9 @@ def index():
 
 
 def _bot_ready() -> bool:
-    """True once _load_bot_modules() and the rest of main()'s setup finished.
+    """True once _load_bot_modules() and the rest of serve()'s setup finished.
 
-    Flask starts accepting connections before this is true (see main()), so
+    Flask starts accepting connections before this is true (see serve()), so
     routes that touch bot_app/event_loop/token_storage/the deferred imports
     need this guard to fail fast with a clean 503 instead of a NoneType/
     NameError during the brief startup window.
@@ -294,7 +294,7 @@ def webhook(token):
 
     if not _bot_ready():
         # Flask accepts connections before bot_app finishes initializing (see
-        # main()) — 503 here so Telegram retries shortly instead of getting a
+        # serve()) — 503 here so Telegram retries shortly instead of getting a
         # raw connection failure during that window.
         logger.warning("Webhook received before bot finished starting up, returning 503")
         return Response(status=503)
@@ -358,11 +358,11 @@ def start_event_loop(loop):
 
 def _run_flask():
     """Run the app under waitress, a production-grade WSGI server. Called on
-    its own thread — see main()."""
+    its own thread — see serve()."""
     waitress.serve(app, host='0.0.0.0', port=config.webhook_port, threads=8)
 
 
-def main():
+def serve():
     """Main function to start the webhook server.
 
     Flask starts accepting connections *before* the bot/DB/webhook setup
@@ -479,7 +479,7 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        serve()
     except KeyboardInterrupt:
         logger.info("Webhook server stopped by user")
     except Exception as e:

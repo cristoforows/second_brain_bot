@@ -3,7 +3,7 @@ from __future__ import annotations
 import structlog
 from langchain_core.tools import tool
 
-from second_brain.services.drive import DriveService
+from second_brain.summarizer.drive import DriveService
 
 log = structlog.get_logger()
 

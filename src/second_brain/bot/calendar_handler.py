@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from google_auth import get_google_service, TokenStorage
+from second_brain.bot.google_auth import get_google_service, TokenStorage
 
 logger = logging.getLogger(__name__)
 

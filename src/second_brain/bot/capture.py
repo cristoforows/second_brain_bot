@@ -5,12 +5,14 @@ Handles file creation, message appending, and message editing in Drive.
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaInMemoryUpload
 
-from google_auth import get_google_service, TokenStorage
+from second_brain.bot.google_auth import get_google_service, TokenStorage
+from second_brain.core.config import config
+from second_brain.core.timeutil import capture_date
 
 logger = logging.getLogger(__name__)
 
@@ -97,18 +99,16 @@ def find_folder(service, folder_name: str) -> str | None:
 def get_or_create_markdown_file(service, folder_id: str, day_cutoff_hour: int = 0) -> str | None:
     """Find existing markdown file or create a new one in Drive.
 
-    If the current hour is before `day_cutoff_hour`, the file for the
-    *previous* day is used instead. For example, with day_cutoff_hour=4 a
-    message sent at 02:30 is appended to yesterday's file.
+    If the current hour (in `config.app_timezone`) is before `day_cutoff_hour`,
+    the file for the *previous* day is used instead. For example, with
+    day_cutoff_hour=4 a message sent at 02:30 local time is appended to
+    yesterday's file. Uses the configured timezone rather than the
+    container's local clock, so this behaves the same regardless of where
+    the process runs.
 
     Returns the file ID.
     """
-    now = datetime.now()
-    if day_cutoff_hour > 0 and now.hour < day_cutoff_hour:
-        from datetime import timedelta
-        target_date = (now - timedelta(days=1)).date()
-    else:
-        target_date = now.date()
+    target_date = capture_date(datetime.now(timezone.utc), config.app_timezone, day_cutoff_hour)
     file_name = target_date.strftime('%Y-%m-%d') + '.md'
     try:
         # Search for existing file by name whithin the folder

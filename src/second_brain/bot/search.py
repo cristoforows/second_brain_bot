@@ -13,11 +13,11 @@ from functools import lru_cache
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import config
-import drive_handler
-from google_auth import has_drive_read_scope
-import scheduler
-import vault_agent
+from second_brain.core.config import config
+from second_brain.bot import capture as drive_handler
+from second_brain.bot.google_auth import has_drive_read_scope
+from second_brain.bot import timebox_planner as scheduler
+from second_brain.bot import vault_agent
 
 logger = logging.getLogger(__name__)
 

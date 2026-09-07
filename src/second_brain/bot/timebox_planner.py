@@ -15,9 +15,10 @@ from zoneinfo import ZoneInfo
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, field_validator
 
+from second_brain.core.llm import create_llm as _create_llm
+
 logger = logging.getLogger(__name__)
 
-_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _MAX_ATTEMPTS = 2  # one automatic retry
 _GAP_TOLERANCE_MIN = 5  # gaps at/below this are left alone (rounding, room-to-room); also told to the LLM in the prompt
 
@@ -161,14 +162,12 @@ def compute_target_date(now: datetime, timezone_name: str, cutoff_hour: int) -> 
 
 
 def create_llm(api_key: str, model: str) -> ChatOpenAI:
-    """Create a ChatOpenAI client pointed at OpenRouter."""
-    return ChatOpenAI(
-        model=model,
-        openai_api_key=api_key,
-        openai_api_base=_OPENROUTER_BASE_URL,
-        extra_body={"include_reasoning": False},
-        request_timeout=120,
-    )
+    """Create a ChatOpenAI client pointed at OpenRouter.
+
+    Thin wrapper over the shared factory in core.llm — /timebox and /search
+    use a 120s timeout (vs. the summarizer's much longer-running 1800s).
+    """
+    return _create_llm(api_key, model, timeout=120)
 
 
 class ScheduleGenerationError(Exception):

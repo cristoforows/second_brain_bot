@@ -25,10 +25,10 @@ from telegram.ext import (
     filters,
 )
 
-from config import config
-from google_auth import has_calendar_scope
-import calendar_handler
-import scheduler
+from second_brain.core.config import config
+from second_brain.bot.google_auth import has_calendar_scope
+from second_brain.bot import calendar_handler
+from second_brain.bot import timebox_planner as scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +149,7 @@ async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     context.user_data[_MODE_KEY] = mode
 
     target_date = scheduler.compute_target_date(
-        datetime.now(timezone.utc), config.timebox_timezone, config.timebox_cutoff_hour
+        datetime.now(timezone.utc), config.app_timezone, config.timebox_cutoff_hour
     )
     context.user_data[_DATE_KEY] = target_date
 
@@ -176,7 +176,7 @@ async def choose_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     try:
         exists = await asyncio.to_thread(
             calendar_handler.has_existing_schedule,
-            service, config.timebox_calendar_id, target_date, config.timebox_timezone,
+            service, config.timebox_calendar_id, target_date, config.app_timezone,
             config.timebox_day_start,
         )
     except Exception as e:
@@ -303,7 +303,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     mode = context.user_data.get(_MODE_KEY, "wfh")
     target_date = context.user_data.get(_DATE_KEY) or scheduler.compute_target_date(
-        datetime.now(timezone.utc), config.timebox_timezone, config.timebox_cutoff_hour
+        datetime.now(timezone.utc), config.app_timezone, config.timebox_cutoff_hour
     )
     start_override = context.user_data.get(_START_KEY)
 
@@ -346,13 +346,13 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         # it belongs to the previous day's schedule, not this one.
         await asyncio.to_thread(
             calendar_handler.clear_timebox_events,
-            service, config.timebox_calendar_id, target_date, config.timebox_timezone,
+            service, config.timebox_calendar_id, target_date, config.app_timezone,
             start_override or config.timebox_day_start,
         )
         write_results = await asyncio.to_thread(
             calendar_handler.write_schedule,
             service, config.timebox_calendar_id, result.schedule, target_date,
-            config.timebox_timezone,
+            config.app_timezone,
         )
     except Exception as e:
         logger.error(f"Calendar publish failed for user {user_id}: {e}")

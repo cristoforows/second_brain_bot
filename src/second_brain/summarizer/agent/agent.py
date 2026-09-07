@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
-from second_brain.agent.prompts import AD_HOC_PROMPT, build_index_prompt, build_system_prompt
+from second_brain.summarizer.agent.prompts import AD_HOC_PROMPT, build_index_prompt, build_system_prompt
 from second_brain.core.models import Message
 
 log = structlog.get_logger()

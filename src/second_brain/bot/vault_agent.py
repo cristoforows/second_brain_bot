@@ -19,7 +19,7 @@ import logging
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
-import drive_handler
+from second_brain.bot import capture as drive_handler
 
 logger = logging.getLogger(__name__)
 

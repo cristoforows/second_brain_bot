@@ -1,27 +1,20 @@
 from __future__ import annotations
 
-import argparse
-import logging
 import re
-import secrets
-import string
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
-from pathlib import Path
 
 import structlog
 
-from second_brain.agent.agent import build_agent, run_agent, run_agent_index, run_agent_with_prompt
-from second_brain.agent.llm import create_llm
-from second_brain.core.config import get_settings
+from second_brain.core.config import Settings, get_settings
+from second_brain.core.llm import create_llm
 from second_brain.core.models import RunResult
 from second_brain.core.timeutil import today, yesterday
-from second_brain.services.drive import DriveService
-from second_brain.services.telegram import TelegramService
-from second_brain.tools import drive_tools, telegram_tools
-from second_brain.tools.drive_tools import init_tools
-from second_brain.utils.parser import parse_dump
+from second_brain.summarizer.agent.agent import build_agent, run_agent, run_agent_index, run_agent_with_prompt
+from second_brain.summarizer.drive import DriveService
+from second_brain.summarizer.tools import drive_tools, telegram_tools
+from second_brain.summarizer.tools.drive_tools import init_tools
+from second_brain.summarizer.parser import parse_dump
 
 log = structlog.get_logger()
 
@@ -102,31 +95,36 @@ def _get_active_todos(drive: DriveService, output_folder_id: str) -> str | None:
     return _format_active_todos(tasks)
 
 
-def _resolve_date_str(date_str: str | None, tz: str) -> str:
+def resolve_date_str(date_str: str | None, tz: str) -> str:
     """Resolve a `--date` value to a concrete `YYYY-MM-DD` string.
 
-    `None` resolves to today in `tz`; the literal `"yesterday"` resolves to
-    yesterday in `tz`; any other value (an explicit `YYYY-MM-DD`) passes through.
+    `None` or the literal `"yesterday"` resolves to yesterday in `tz` (the
+    nightly job's default target); the literal `"today"` resolves to today in
+    `tz`; any other value (an explicit `YYYY-MM-DD`) passes through.
     """
-    if date_str is None:
-        return today(tz).isoformat()
-    if date_str == "yesterday":
+    if date_str is None or date_str == "yesterday":
         return yesterday(tz).isoformat()
+    if date_str == "today":
+        return today(tz).isoformat()
     return date_str
 
 
-def _init_agent(dry_run: bool = False) -> tuple:
+def _init_agent(settings: Settings, dry_run: bool = False) -> tuple:
     """Initialize Drive, tools, and agent. Shared by all pipeline entry points."""
-    settings = get_settings()
     drive = DriveService(settings.google_service_refresh_token)
-    init_tools(drive, settings.output_drive_folder_id, dry_run=dry_run)
-    if settings.telegram_outbound_url and settings.telegram_outbound_secret:
-        telegram = TelegramService(settings.telegram_outbound_url, settings.telegram_outbound_secret)
-        telegram_tools.init_tools(telegram, settings.telegram_chat_id, dry_run=dry_run)
-    llm = create_llm(settings)
+    init_tools(drive, settings.vault_folder_id, dry_run=dry_run)
+    telegram_tools.init_tools(settings.summary_chat_id, dry_run=dry_run)
+    llm = create_llm(
+        settings.openrouter_api_key,
+        settings.llm.model,
+        timeout=1800,
+        max_tokens=settings.llm.max_tokens,
+        temperature=settings.llm.temperature,
+        provider=settings.llm.provider,
+    )
     tools = drive_tools.get_all_tools() + telegram_tools.get_all_tools()
     agent = build_agent(llm, tools)
-    return settings, drive, agent
+    return drive, agent
 
 
 def run_pipeline(
@@ -137,9 +135,10 @@ def run_pipeline(
     """Execute the full summarization pipeline for a given date.
 
     Args:
-        date_str: Date string (YYYY-MM-DD), the literal "yesterday", or None.
-                  Defaults to today in the configured APP_TIMEZONE.
-        dry_run: Skip all Drive write operations when True.
+        date_str: Date string (YYYY-MM-DD), the literal "yesterday"/"today",
+                  or None. Defaults to yesterday in the configured
+                  APP_TIMEZONE (the nightly job's target date).
+        dry_run: Skip all Drive write operations and Telegram sends when True.
         notify: Callback invoked with each outbound notification message
                 (the run summary, then the active to-do list if any). When
                 omitted, notifications are sent via Telegram directly, as before.
@@ -148,8 +147,9 @@ def run_pipeline(
         A RunResult summarizing what happened during this run.
     """
     start = time.monotonic()
-    settings, drive, agent = _init_agent(dry_run=dry_run)
-    date_str = _resolve_date_str(date_str, settings.app_timezone)
+    settings = get_settings()
+    drive, agent = _init_agent(settings, dry_run=dry_run)
+    date_str = resolve_date_str(date_str, settings.app_timezone)
 
     def _notify(text: str) -> None:
         if notify is not None:
@@ -180,14 +180,14 @@ def run_pipeline(
             mode = "messages"
         else:
             log.info("no_messages_running_todo_maintenance", date=date_str)
-            from second_brain.agent.prompts import TODO_MAINTENANCE_PROMPT
+            from second_brain.summarizer.agent.prompts import TODO_MAINTENANCE_PROMPT
             run_agent_with_prompt(agent, TODO_MAINTENANCE_PROMPT)
             log.info("todo_maintenance_complete", date=date_str)
             mode = "todo_maintenance"
 
         # --- Send notifications ---
         _notify(_format_run_summary(date_str, len(messages), drive._updates))
-        todo_msg = _get_active_todos(drive, settings.output_drive_folder_id)
+        todo_msg = _get_active_todos(drive, settings.vault_folder_id)
         if todo_msg:
             _notify(todo_msg)
 
@@ -203,162 +203,21 @@ def run_pipeline(
         drive.log_run_summary()
 
 
-def main() -> None:
-    """CLI entry point."""
-    parser = argparse.ArgumentParser(
-        description="Second Brain Summarizer — organize messages into a living knowledge base",
-    )
-    parser.add_argument(
-        "--date",
-        type=str,
-        default=None,
-        help="Date to process: YYYY-MM-DD, or the literal 'yesterday'. "
-        "Defaults to today in APP_TIMEZONE.",
-    )
-    parser.add_argument(
-        "--prompt", "-p",
-        type=str,
-        default=None,
-        help="Run the agent with a custom prompt instead of a dump file.",
-    )
-    parser.add_argument(
-        "--index",
-        action="store_true",
-        help="Rebuild Directory.yaml files across the knowledge base.",
-    )
-    parser.add_argument(
-        "--changed",
-        nargs="+",
-        metavar="PATH",
-        default=None,
-        help="Paths of recently added or modified files (used with --index).",
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable debug logging to see agent reasoning steps.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run the full pipeline but skip all Drive write operations.",
-    )
-    args = parser.parse_args()
-
-    settings = get_settings()
-    resolved_date = _resolve_date_str(args.date, settings.app_timezone)
-
-    log_path = _configure_logging(
-        verbose=args.verbose, date_str=resolved_date, log_dir=settings.summarizer_log_dir
-    )
-    if log_path is not None:
-        log.info("log_file", path=str(log_path))
-
-    if args.dry_run:
-        log.info("dry_run_mode_enabled")
-        print("[dry-run] No changes will be written to Google Drive.")
-
-    if args.prompt:
-        _run_prompt(args.prompt, dry_run=args.dry_run)
-    elif args.index:
-        _run_index(args.changed, dry_run=args.dry_run)
-    else:
-        result = run_pipeline(date_str=resolved_date, dry_run=args.dry_run)
-        if result.mode == "messages":
-            print(f"Processed {result.message_count} messages from {result.date}.md.")
-        else:
-            print(f"No messages for {result.date} — ran to-do maintenance.")
-
-
-def _configure_logging(
-    verbose: bool = False, date_str: str | None = None, log_dir: str = "tmp"
-) -> Path | None:
-    """Configure structlog + stdlib logging.
-
-    Console respects --verbose (INFO by default, DEBUG when set).
-    When `log_dir` is non-empty, a DEBUG-level file log is also written to
-    ``<log_dir>/<run_id><date>.log`` (relative paths resolve against the
-    project root), so local runs leave a per-run trace on disk. An empty
-    `log_dir` means stdout-only logging. Returns the log file path, or
-    None when no file was written.
-    """
-    console_level = logging.DEBUG if verbose else logging.INFO
-
-    alphabet = string.ascii_lowercase + string.digits
-    run_id = "".join(secrets.choice(alphabet) for _ in range(4))
-    date_part = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    log_path: Path | None = None
-    if log_dir:
-        target_dir = Path(log_dir)
-        if not target_dir.is_absolute():
-            project_root = Path(__file__).resolve().parents[2]
-            target_dir = project_root / target_dir
-        target_dir.mkdir(parents=True, exist_ok=True)
-        log_path = target_dir / f"{run_id}{date_part}.log"
-
-    shared_processors = [
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-    ]
-
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
-        processors=shared_processors
-        + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-    )
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(console_level)
-    console_handler.setFormatter(
-        structlog.stdlib.ProcessorFormatter(
-            foreign_pre_chain=shared_processors,
-            processor=structlog.dev.ConsoleRenderer(),
-        )
-    )
-
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    root.handlers.clear()
-    root.addHandler(console_handler)
-
-    if log_path is not None:
-        file_handler = logging.FileHandler(log_path, encoding="utf-8")
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(
-            structlog.stdlib.ProcessorFormatter(
-                foreign_pre_chain=shared_processors,
-                processor=structlog.dev.ConsoleRenderer(colors=False),
-            )
-        )
-        root.addHandler(file_handler)
-
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
-
-    return log_path
-
-
-def _run_prompt(prompt: str, dry_run: bool = False) -> None:
+def run_prompt(prompt: str, dry_run: bool = False) -> None:
     """Initialize tools and run the agent with a custom user prompt."""
-    _, drive, agent = _init_agent(dry_run=dry_run)
+    settings = get_settings()
+    drive, agent = _init_agent(settings, dry_run=dry_run)
     try:
         run_agent_with_prompt(agent, prompt)
     finally:
         drive.log_run_summary()
 
 
-def _run_index(changed_files: list[str] | None = None, dry_run: bool = False) -> None:
+def run_index(changed_files: list[str] | None = None, dry_run: bool = False) -> None:
     """Initialize tools and run the indexer to rebuild Directory.yaml files."""
-    _, drive, agent = _init_agent(dry_run=dry_run)
+    settings = get_settings()
+    drive, agent = _init_agent(settings, dry_run=dry_run)
     try:
         run_agent_index(agent, changed_files)
     finally:
         drive.log_run_summary()
-
-
-
-if __name__ == "__main__":
-    main()

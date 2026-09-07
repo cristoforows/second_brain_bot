@@ -12,11 +12,11 @@ from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-from config import config
-from google_auth import generate_auth_url, TokenStorage
-from timebox import build_timebox_handler
-from search import search_command
-import drive_handler
+from second_brain.core.config import config
+from second_brain.bot.google_auth import generate_auth_url, TokenStorage
+from second_brain.bot.timebox import build_timebox_handler
+from second_brain.bot.search import search_command
+from second_brain.bot import capture
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -212,21 +212,21 @@ async def store_message_on_drive(update: Update, context: ContextTypes.DEFAULT_T
     timestamp = message.date or datetime.now(timezone.utc)
 
     try:
-        service = drive_handler.get_drive_service(user_id, token_storage)
+        service = capture.get_drive_service(user_id, token_storage)
         if not service:
             await message.reply_text(
                 "Your Google Drive session has expired and could not be refreshed. "
                 "Your message was not saved. Please use /logout then /authenticate to reconnect."
             )
             return
-        folder_id = drive_handler.get_or_create_folder(service, config.drive_folder_name)
+        folder_id = capture.get_or_create_folder(service, config.drive_folder_name)
         if not folder_id:
             await message.reply_text(
                 "Could not find or create the folder in Google Drive. "
                 "Your message was not saved. Please try again later."
             )
             return
-        file_id = drive_handler.get_or_create_markdown_file(service, folder_id, config.day_cutoff_hour)
+        file_id = capture.get_or_create_markdown_file(service, folder_id, config.day_cutoff_hour)
         if not file_id:
             await message.reply_text(
                 "Could not find or create the markdown file in Google Drive. "
@@ -235,16 +235,16 @@ async def store_message_on_drive(update: Update, context: ContextTypes.DEFAULT_T
             return
 
         if is_edited:
-            success = drive_handler.update_message(service, file_id, message_id, user_message, timestamp)
+            success = capture.update_message(service, file_id, message_id, user_message, timestamp)
             if success:
                 logger.info(f"Message {message_id} updated in Drive for user {user_id}")
             else:
                 # Message not found for edit - append as new instead
-                success = drive_handler.append_message(service, file_id, message_id, user_message, timestamp, username)
+                success = capture.append_message(service, file_id, message_id, user_message, timestamp, username)
                 if success:
                     logger.info(f"Edited message {message_id} appended as new for user {user_id}")
         else:
-            success = drive_handler.append_message(service, file_id, message_id, user_message, timestamp, username)
+            success = capture.append_message(service, file_id, message_id, user_message, timestamp, username)
             if success:
                 logger.info(f"Message {message_id} saved to Drive for user {user_id}")
 
@@ -274,19 +274,19 @@ async def handle_deleted_message(message_id: int, user_id: int, token_storage: T
         return
 
     try:
-        service = drive_handler.get_drive_service(user_id, token_storage)
+        service = capture.get_drive_service(user_id, token_storage)
         if not service:
             return
 
-        folder_id = drive_handler.get_or_create_folder(service, config.drive_folder_name)
+        folder_id = capture.get_or_create_folder(service, config.drive_folder_name)
         if not folder_id:
             return
 
-        file_id = drive_handler.get_or_create_markdown_file(service, folder_id, config.day_cutoff_hour)
+        file_id = capture.get_or_create_markdown_file(service, folder_id, config.day_cutoff_hour)
         if not file_id:
             return
 
-        drive_handler.delete_message(service, file_id, message_id)
+        capture.delete_message(service, file_id, message_id)
         logger.info(f"Deleted message {message_id} from Drive for user {user_id}")
 
     except Exception as e:
@@ -330,39 +330,3 @@ def register_handlers(application: Application) -> None:
     application.add_error_handler(error_handler)
 
     logger.info("Bot handlers registered successfully")
-
-
-def main() -> None:
-    """Main function to start the bot."""
-    logger.info("Starting Second Brain Bot...")
-
-    try:
-        # Create the Application
-        application = Application.builder().token(config.bot_token).build()
-
-        # Flag the local polling entrypoint so /status can show a "--local"
-        # marker. webhook_server.py (prod) never sets this.
-        application.bot_data['is_local'] = True
-
-        register_handlers(application)
-        logger.info("Starting polling...")
-
-        # Start polling for updates
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True  # Ignore messages received while bot was offline
-        )
-
-    except Exception as e:
-        logger.critical(f"Failed to start the bot: {e}")
-        raise
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.critical(f"Critical error: {e}")
-        exit(1)
