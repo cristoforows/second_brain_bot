@@ -1,49 +1,37 @@
-# Multi-stage build for smaller final image
-FROM python:3.11-slim as builder
+# Multi-stage build using uv for fast, reproducible dependency installation.
+FROM python:3.12-slim AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir uv
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+# Install dependencies first (cached separately from source changes).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
-# Final stage
-FROM python:3.11-slim
+# Now install the project itself.
+COPY src/ src/
+COPY config.yaml ./
+RUN uv sync --frozen --no-dev
 
-# Set working directory
+# --- Final stage ---
+FROM python:3.12-slim
+
 WORKDIR /app
 
-# Create non-root user for security
-RUN useradd -m -u 1000 botuser && \
-    mkdir -p /app/tokens && \
-    chown -R botuser:botuser /app
+RUN useradd -m -u 1000 app && chown -R app:app /app
 
-# Copy Python dependencies from builder
-COPY --from=builder /root/.local /home/botuser/.local
+COPY --from=builder --chown=app:app /app /app
 
-# Copy application code (whole src/ so new modules ship without editing this list)
-COPY --chown=botuser:botuser src/ .
+USER app
 
-# Switch to non-root user
-USER botuser
-
-# Make sure scripts in .local are usable; keep runtime lean and unbuffered
-ENV PATH=/home/botuser/.local/bin:$PATH \
+ENV PATH=/app/.venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Expose webhook port
 EXPOSE 8443
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8443/')"
 
-# Run the webhook server
-CMD ["python", "webhook_server.py"]
+CMD ["second-brain", "serve"]
