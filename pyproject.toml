@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "second-brain-summarizer"
+version = "0.1.0"
+description = "AI agent that summarizes and categorizes messages into a living document structure"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=0.3,<0.4",
+    "langchain-openai>=0.3,<0.4",
+    "langgraph>=0.2,<0.4",
+    "google-api-python-client>=2.100,<3",
+    "google-auth>=2.20,<3",
+    "google-auth-oauthlib>=1.0,<2",
+    "pydantic-settings>=2.0,<3",
+    "pyyaml>=6.0,<7",
+    "python-dotenv>=1.0,<2",
+    "structlog>=24.0,<26",
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-asyncio>=0.23,<1",
+]
+
+[project.scripts]
+second-brain = "second_brain.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/second_brain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

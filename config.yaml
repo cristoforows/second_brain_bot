@@ -1,0 +1,18 @@
+llm:
+  model: "deepseek/deepseek-v4-flash"
+  provider:
+    ignore:
+      - "AtlasCloud"
+    allow_fallbacks: true
+  temperature: 0.5
+  max_tokens: 16000
+
+seed_categories:
+  - name: "work"
+    description: "Work-related tasks, meetings, projects"
+  - name: "personal"
+    description: "Personal notes, reminders, ideas"
+  - name: "learning"
+    description: "Study notes, articles, courses"
+  - name: "health"
+    description: "Health, fitness, medical notes"
