@@ -121,6 +121,31 @@ def test_expired_token_raises_oidc_rejected(rsa_keypair, signing_key):
         verify_github_identity(token)
 
 
+def test_clock_skew_within_leeway_is_accepted(rsa_keypair, signing_key):
+    """The job machine's clock can lag a few seconds after resuming from
+    suspend, while GitHub mints iat/nbf as exactly "now" — a token whose
+    iat/nbf is slightly in the future (here, 30s) must still verify."""
+    private_pem, _ = rsa_keypair
+    now = int(time.time())
+    future = now + 30
+    token = _sign(_valid_claims(iat=future, nbf=future, exp=future + 300), private_pem)
+
+    claims = verify_github_identity(token)
+    assert claims["repository"] == "cristoforows/second_brain_bot"
+
+
+def test_clock_skew_beyond_leeway_is_rejected(rsa_keypair, signing_key):
+    """A larger future skew (here, 120s — beyond the 60s leeway) is not a
+    clock-lag artifact and should still be rejected."""
+    private_pem, _ = rsa_keypair
+    now = int(time.time())
+    future = now + 120
+    token = _sign(_valid_claims(iat=future, nbf=future, exp=future + 300), private_pem)
+
+    with pytest.raises(OidcRejected):
+        verify_github_identity(token)
+
+
 def test_wrong_repository_raises_policy_rejected(rsa_keypair, signing_key):
     private_pem, _ = rsa_keypair
     token = _sign(_valid_claims(repository="someone-else/other-repo"), private_pem)

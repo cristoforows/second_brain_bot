@@ -66,6 +66,12 @@ def verify_github_identity(bearer: str) -> dict:
             algorithms=["RS256"],
             audience=settings.nightly_oidc_audience,
             issuer=ISSUER,
+            # The job machine resumes from Fly suspend with its clock
+            # potentially lagging a few seconds until NTP resyncs, while
+            # GitHub mints iat/nbf as exactly "now" — a small leeway avoids
+            # spurious ImmatureSignatureError/InvalidIssuedAtError right
+            # after a cold start.
+            leeway=60,
             options={"require": ["exp", "iat", "aud", "iss"]},
         )
     except jwt.PyJWTError as e:
