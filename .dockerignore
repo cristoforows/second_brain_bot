@@ -53,6 +53,15 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+tests/
+requirements-dev.txt
+pytest.ini
+
+# Local tooling / agent worktrees (can be very large)
+.claude/
+.github/
+k8s/
+package.json
 
 # Build artifacts
 build/

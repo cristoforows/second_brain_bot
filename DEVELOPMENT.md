@@ -71,7 +71,7 @@ git clone https://github.com/yourusername/second_brain_bot.git
 cd second_brain_bot
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt   # requirements-dev.txt adds pytest
 ```
 
 ### 2. Configure Environment

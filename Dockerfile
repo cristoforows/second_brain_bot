@@ -33,8 +33,10 @@ COPY --chown=botuser:botuser src/ .
 # Switch to non-root user
 USER botuser
 
-# Make sure scripts in .local are usable
-ENV PATH=/home/botuser/.local/bin:$PATH
+# Make sure scripts in .local are usable; keep runtime lean and unbuffered
+ENV PATH=/home/botuser/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 # Expose webhook port
 EXPOSE 8443
