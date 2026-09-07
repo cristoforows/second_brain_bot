@@ -1,7 +1,9 @@
 # Deploy (Fly.io)
 
-The bot runs as a single Fly.io app, built from `Dockerfile`, scaled to zero
-between requests. This guide covers the Fly workflow only.
+The bot and the nightly summarizer ship from the same Dockerfile as a single
+Fly.io app. The bot runs continuously (scaled to zero between requests); the
+summarizer runs as a one-off machine invocation, not a long-lived process.
+This guide covers the Fly workflow only.
 
 ## Prerequisites
 
@@ -34,10 +36,26 @@ fly secrets set \
 Optional overrides (Drive folder names, `DAY_CUTOFF_HOUR`,
 `OUTBOUND_API_SECRET`, `LLM_MODEL`, and the `TIMEBOX_*` scheduling defaults)
 are documented with their defaults in `.env.example` — set only the ones you
-want to change from the default.
+want to change from the default. `APP_TIMEZONE` is set in `fly.toml`'s
+`[env]` block (not a secret) since it isn't sensitive.
 
 `fly secrets set` triggers a new deploy on its own; you don't need to also
 run `fly deploy` right after unless you're also shipping a code change.
+
+For the nightly summarizer job, also set:
+
+```bash
+fly secrets set \
+  GOOGLE_TOKEN_JSON="$(cat token.json)" \
+  INPUT_DRIVE_FOLDER_ID=... \
+  VAULT_FOLDER_ID=... \
+  SUMMARY_CHAT_ID=...
+```
+
+`GOOGLE_TOKEN_JSON` carries the OAuth token's JSON *content* (rather than a
+file path) since Fly secrets are environment variables, not files —
+`summarizer/drive.py` checks for it before falling back to
+`GOOGLE_SERVICE_REFRESH_TOKEN`'s file path.
 
 ## Deploy
 
@@ -88,3 +106,26 @@ Fly's routing layer knows when the machine is actually ready.
   verifies a connection with `SELECT 1` before use — a connection that went
   stale across a suspend/resume cycle is discarded and replaced
   transparently instead of surfacing an error to the caller.
+
+## Nightly summarizer job
+
+The summarizer runs as a **one-off Fly machine**, not a long-lived service —
+it starts, processes one day's dump, sends its Telegram summary, and exits.
+It ships from the exact same image as the bot (same `Dockerfile`, same
+deploy), just invoked with a different command.
+
+Manual invocation, for testing or a one-off backfill:
+
+```bash
+fly machine run <image> -a <app> --rm --restart no --region sin \
+  --vm-memory 512 --command "second-brain summarize --date YYYY-MM-DD"
+```
+
+Find `<image>` from `fly releases` or `fly image show`. `--rm` deletes the
+machine once it exits; `--restart no` stops Fly from ever restarting a
+one-shot job that's supposed to run once.
+
+**Not yet wired up** (a later slice): a GitHub Actions workflow calling `fly
+machine run` on a nightly cron schedule, and/or an HTTP trigger endpoint the
+schedule can hit instead of shelling out to `flyctl` directly. Until then,
+run the command above manually or from your own cron/launchd.
