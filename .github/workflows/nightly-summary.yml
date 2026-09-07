@@ -1,0 +1,40 @@
+name: Nightly summary
+
+on:
+  schedule:
+    - cron: "5 20 * * *"   # 04:05 Asia/Singapore
+  workflow_dispatch:
+    inputs:
+      date:    { description: "YYYY-MM-DD (default: yesterday SGT)", required: false }
+      dry_run: { type: boolean, default: false }
+
+concurrency: nightly-summary
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ask the bot to start tonight's job
+        env:
+          APP_URL: https://second-brain-bot-old-violet-1669.fly.dev
+          INPUT_DATE: ${{ inputs.date }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=second-brain-bot-nightly" | jq -r .value)
+          BODY=$(jq -nc --arg d "$INPUT_DATE" --arg dry "${INPUT_DRY_RUN:-false}" '{dry_run: ($dry == "true")} + (if $d == "" then {} else {date: $d} end)')
+          curl -fsS --retry 8 --retry-all-errors --retry-delay 15 --max-time 60 -X POST "$APP_URL/api/jobs/nightly-summary" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$BODY"
+
+      - name: Keep the schedule alive (public repo, 60-day inactivity rule)
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(cut -c1-7 .github/last-run 2>/dev/null)" != "$(date -u +%Y-%m)" ]; then
+            date -u +%Y-%m-%d > .github/last-run
+            git config user.name "nightly-summary" && git config user.email "actions@users.noreply.github.com"
+            git add .github/last-run && git commit -m "chore: nightly summary heartbeat" && git push
+          fi
