@@ -11,5 +11,4 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-YESTERDAY=$(date -v-1d +%Y-%m-%d)
-.venv/bin/second-brain --date "$YESTERDAY"
+.venv/bin/second-brain --date yesterday

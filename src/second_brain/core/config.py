@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     telegram_outbound_secret: str = ""
     telegram_chat_id: str = ""
 
+    # --- Runtime behaviour (env-overridable, sensible defaults) ---
+    app_timezone: str = "Asia/Singapore"
+    summarizer_log_dir: str = "tmp"
+
     # --- Non-secrets (from config.yaml) ---
     llm: LLMConfig = Field(default_factory=LLMConfig)
     seed_categories: list[Category] = Field(default_factory=list)
