@@ -337,4 +337,19 @@ def get_settings() -> Settings:
         sys.exit(1)
 
 
-config = get_settings()
+def __getattr__(name: str):
+    """Lazily build the `config` singleton on first access (PEP 562).
+
+    `second_brain.cli` dispatches to several subcommands that don't need bot
+    credentials at all (summarize/index/prompt) — even `second-brain --help`
+    shouldn't require TELEGRAM_BOT_TOKEN etc. just because some other module
+    imports this one. Deferring construction to first *attribute* access
+    (rather than eagerly at import time, like the old bot's `config.py`)
+    means `import second_brain.core.config` alone never validates anything;
+    only actually reading `config.<field>` does. `get_settings()` is cached,
+    so every caller ends up sharing the same instance regardless of which
+    import triggered its construction first.
+    """
+    if name == "config":
+        return get_settings()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -16,7 +16,7 @@ import sys
 
 import structlog
 
-from second_brain.core.config import config, get_settings
+from second_brain.core.config import get_settings
 from second_brain.core.logging import configure_bot_logging, configure_logging
 from second_brain.core.notify import send_telegram
 from second_brain.summarizer import pipeline
@@ -27,7 +27,8 @@ _ERROR_MSG_MAX_LEN = 300
 
 
 def _cmd_serve(_args: argparse.Namespace) -> int:
-    configure_bot_logging(config.log_level)
+    settings = get_settings()
+    configure_bot_logging(settings.log_level)
     logger = logging.getLogger(__name__)
     from second_brain.bot.webhook import serve
 
@@ -43,7 +44,8 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
 
 
 def _cmd_poll(_args: argparse.Namespace) -> int:
-    configure_bot_logging(config.log_level)
+    settings = get_settings()
+    configure_bot_logging(settings.log_level)
     logger = logging.getLogger(__name__)
     logger.info("Starting Second Brain Bot (polling mode)...")
 
@@ -53,7 +55,7 @@ def _cmd_poll(_args: argparse.Namespace) -> int:
     from second_brain.bot.handlers import register_handlers
 
     try:
-        application = Application.builder().token(config.bot_token).build()
+        application = Application.builder().token(settings.bot_token).build()
         # Flag the local polling entrypoint so /status can show a "--local"
         # marker. The webhook server (prod) never sets this.
         application.bot_data["is_local"] = True

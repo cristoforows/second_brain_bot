@@ -13,8 +13,6 @@ import asyncio
 import structlog
 from telegram import Bot
 
-from second_brain.core.config import config
-
 log = structlog.get_logger()
 
 
@@ -25,7 +23,13 @@ def send_telegram(chat_id: str, text: str) -> None:
     `telegram.error.TelegramError`) — callers decide whether/how to handle
     that (the summarizer CLI logs and reports it; dry-run skips this call
     entirely).
+
+    Imports `config` lazily (inside the function, not at module level) so
+    that merely importing this module — e.g. transitively via the
+    summarizer's tools, which `cli.py` imports for every subcommand — never
+    requires bot credentials. Only actually sending a message does.
     """
+    from second_brain.core.config import config
 
     async def _send() -> None:
         bot = Bot(token=config.bot_token)
