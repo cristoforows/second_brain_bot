@@ -11,8 +11,11 @@ A daily agent pipeline that reads a daily message dump from Google Drive, extrac
 Runs via **launchd** at 02:51 local time every day.
 
 - Plist: `~/Library/LaunchAgents/com.secondbrain.summarizer.plist`
-- Script: `run_yesterday.sh` — waits for network, then calls `second-brain --date <yesterday>`
-- Logs: stdout/stderr go to `/tmp/second-brain.log` and `/tmp/second-brain-error.log`; the app also writes a per-run debug log to `tmp/<run-id><date>.log`
+- Script: `run_yesterday.sh` — waits for network, then calls `second-brain --date yesterday`
+  (the CLI resolves the literal `yesterday` itself, using the `APP_TIMEZONE` setting)
+- Logs: stdout/stderr go to `/tmp/second-brain.log` and `/tmp/second-brain-error.log`; the app
+  also writes a per-run debug log to `<SUMMARIZER_LOG_DIR>/<run-id><date>.log` (default
+  `tmp/<run-id><date>.log`; set `SUMMARIZER_LOG_DIR=""` for stdout-only logging)
 
 Useful launchd commands:
 ```bash
@@ -61,7 +64,11 @@ llm:
   max_tokens: 16000
 ```
 
-Credentials live in `.env` (see `.env.example`).
+Credentials live in `.env` (see `.env.example`), authenticating as your Google account's
+OAuth token (`token.json`), not a service account. `.env` also carries the two runtime
+settings `APP_TIMEZONE` (default `Asia/Singapore`) and `SUMMARIZER_LOG_DIR` (default `tmp`).
+In CI/headless environments, `GOOGLE_TOKEN_JSON` can hold the token JSON content directly
+instead of relying on a `token.json` file on disk.
 
 ## Knowledge base layout (PARA)
 

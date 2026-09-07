@@ -2,7 +2,7 @@
 
 AI agent that reads daily message dumps from Google Drive, then summarizes, categorizes, and organizes them into a living knowledge base using the PARA method.
 
-Built with LangChain + LangGraph for agentic reasoning, OpenRouter for model-agnostic LLM access, and Google Drive service account for file I/O.
+Built with LangChain + LangGraph for agentic reasoning, OpenRouter for model-agnostic LLM access, and your Google account's OAuth token (`token.json`) for Drive file I/O.
 
 ## How It Works
 
@@ -46,8 +46,8 @@ Output Drive Folder/
 
 - Python 3.11+
 - [OpenRouter](https://openrouter.ai/) API key
-- Google Cloud service account with Drive API enabled
-- Two Google Drive folders (input and output) shared with the service account email
+- A Google Cloud OAuth client (Desktop app) with the Drive API enabled, downloaded as `client_secret.json`
+- Two Google Drive folders (input and output) accessible to the Google account you authorize during the OAuth flow
 
 ## Quick Start
 
@@ -64,11 +64,18 @@ cp .env.example .env
 # Edit .env with your credentials
 
 # Run
-python -m second_brain.main                              # Process today's dump
-python -m second_brain.main --date 2026-03-01            # Process a specific date
-python -m second_brain.main --schedule                   # Run on cron schedule
-python -m second_brain.main --prompt "list all projects" # Ad-hoc query
+python -m second_brain.main                                # Process today's dump (in APP_TIMEZONE)
+python -m second_brain.main --date 2026-03-01               # Process a specific date
+python -m second_brain.main --date yesterday                # Process yesterday's dump (in APP_TIMEZONE)
+python -m second_brain.main --prompt "list all projects"    # Ad-hoc query
+python -m second_brain.main --index                         # Rebuild Directory.yaml files
+python -m second_brain.main --dry-run                       # Run without writing to Drive
+python -m second_brain.main --verbose                       # Debug logging (agent reasoning steps)
 ```
+
+There is no built-in scheduler — the pipeline is a one-shot CLI invocation. Trigger it on a
+schedule with `cron`, `launchd` (see `AGENTS.md`), or similar. `run_yesterday.sh` wraps
+`second-brain --date yesterday` for exactly this purpose.
 
 ## Configuration
 
@@ -77,9 +84,15 @@ Secrets go in `.env`:
 | Variable | Description |
 |----------|-------------|
 | `OPENROUTER_API_KEY` | Your OpenRouter API key |
-| `GOOGLE_SERVICE_REFRESH_TOKEN` | Path to refresh token JSON file |
+| `GOOGLE_SERVICE_REFRESH_TOKEN` | Path to the OAuth token JSON file (default `./token.json`) |
+| `GOOGLE_TOKEN_JSON` | Optional: the OAuth token JSON *content* itself, instead of a file — used in CI/headless environments where writing `token.json` to disk isn't practical |
 | `INPUT_DRIVE_FOLDER_ID` | Google Drive folder ID containing dump files |
 | `OUTPUT_DRIVE_FOLDER_ID` | Google Drive folder ID for the knowledge base |
+| `APP_TIMEZONE` | IANA timezone used to resolve "today" and `--date yesterday` (default `Asia/Singapore`) |
+| `SUMMARIZER_LOG_DIR` | Directory for per-run debug log files, relative to the repo root (default `tmp`); set to an empty string for stdout-only logging |
+
+The first time you run without a `token.json` present, the app opens an interactive OAuth
+consent flow using `client_secret.json` and saves the resulting token to `token.json`.
 
 Non-secrets go in `config.yaml`:
 
@@ -94,9 +107,6 @@ seed_categories:
     description: "Work-related tasks, meetings, projects"
   - name: "personal"
     description: "Personal notes, reminders, ideas"
-
-schedule:
-  cron: "0 8 * * *"  # Daily at 8 AM
 ```
 
 ## Dump File Format
@@ -116,7 +126,7 @@ Finished reading chapter 5 on replication.
 ```bash
 docker build -t second-brain .
 docker run --env-file .env -v ./token.json:/app/token.json second-brain
-docker run --env-file .env -v ./token.json:/app/token.json second-brain --schedule
+docker run --env-file .env -v ./token.json:/app/token.json second-brain --date yesterday
 ```
 
 ## Architecture
