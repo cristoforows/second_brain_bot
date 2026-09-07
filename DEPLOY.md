@@ -49,13 +49,19 @@ fly secrets set \
   GOOGLE_TOKEN_JSON="$(cat token.json)" \
   INPUT_DRIVE_FOLDER_ID=... \
   VAULT_FOLDER_ID=... \
-  SUMMARY_CHAT_ID=...
+  SUMMARY_CHAT_ID=... \
+  FLY_JOB_TOKEN=...
 ```
 
 `GOOGLE_TOKEN_JSON` carries the OAuth token's JSON *content* (rather than a
 file path) since Fly secrets are environment variables, not files —
 `summarizer/drive.py` checks for it before falling back to
 `GOOGLE_SERVICE_REFRESH_TOKEN`'s file path.
+
+`FLY_JOB_TOKEN` is what lets the bot itself create the summarizer's one-off
+machine when the nightly workflow calls `POST /api/jobs/nightly-summary` —
+see "Nightly summarizer job" below for how to generate it. Leaving it unset
+disables that endpoint (it returns 503) without affecting anything else.
 
 ## Deploy
 
@@ -114,7 +120,78 @@ it starts, processes one day's dump, sends its Telegram summary, and exits.
 It ships from the exact same image as the bot (same `Dockerfile`, same
 deploy), just invoked with a different command.
 
-Manual invocation, for testing or a one-off backfill:
+### How the trigger works
+
+```
+GitHub Actions (cron, 04:05 SGT)
+  │  requests a short-lived OIDC ID token from GitHub
+  ▼
+POST /api/jobs/nightly-summary  (the bot, always-on)
+  │  verifies the token's signature (GitHub's JWKS) and its claims
+  │  (repository/ref/workflow/event) against an allowlist — no shared
+  │  secret between the workflow and the bot, just this verification
+  ▼
+Fly Machines API — creates a one-off machine:
+  second-brain summarize [--date D] [--dry-run]
+  (wrapped in `timeout -k 60 2100` so a hang can't run forever)
+  │  auto_destroy: true, restart policy "no" — runs once, cleans itself up
+  ▼
+Telegram: run summary + active to-do digest (or a ❌ failure notice)
+```
+
+There is no long-lived secret in the workflow at all — GitHub signs the
+identity token itself, and the bot verifies it against `NIGHTLY_ALLOWED_*`
+settings rather than trusting a bearer secret.
+
+### Secrets to set
+
+In addition to the bot secrets above:
+
+```bash
+fly secrets set \
+  FLY_JOB_TOKEN=$(fly tokens create deploy -a second-brain-bot-old-violet-1669 --name job-runner --expiry 8760h) \
+  GOOGLE_TOKEN_JSON="$(cat token.json)" \
+  INPUT_DRIVE_FOLDER_ID=... \
+  VAULT_FOLDER_ID=... \
+  SUMMARY_CHAT_ID=...
+```
+
+`FLY_JOB_TOKEN` is a deploy-scoped Fly API token (1-year expiry above; rotate
+before it lapses) — it's what lets the bot call the Fly Machines API on its
+own behalf to create the summarizer machine. `FLY_APP_NAME` and
+`FLY_IMAGE_REF` don't need to be set manually — Fly injects both into every
+machine automatically.
+
+### Policy (who's allowed to trigger)
+
+The endpoint accepts a token only if **all** of these match (defaults below;
+override via the matching `NIGHTLY_*` env var only if you forked the repo or
+renamed the workflow):
+
+| Claim | Required value | Setting |
+|---|---|---|
+| `aud` (audience) | `second-brain-bot-nightly` | `NIGHTLY_OIDC_AUDIENCE` |
+| `repository` | `cristoforows/second_brain_bot` | `NIGHTLY_ALLOWED_REPOSITORY` |
+| `ref` | `refs/heads/main` | `NIGHTLY_ALLOWED_REF` |
+| `workflow_ref` (prefix) | `<repository>/<workflow>@<ref>` | `NIGHTLY_ALLOWED_WORKFLOW` |
+| `event_name` | `schedule` or `workflow_dispatch` | (fixed, not configurable) |
+
+A token failing signature/expiry/audience/issuer checks gets **401**; a
+token that verifies but doesn't match the policy table gets **403**; GitHub's
+JWKS endpoint being unreachable gets **503** (retry — this isn't a rejection).
+A request while a summarizer machine is already running gets **409**; a
+downstream Fly Machines API failure gets **502**.
+
+### Backfilling a specific day
+
+Either trigger the workflow manually with a date:
+
+```bash
+gh workflow run nightly-summary.yml -f date=2026-06-01 -f dry_run=true
+```
+
+(uses "Run workflow" → fill in `date`/`dry_run` if you'd rather click through
+the GitHub UI), or bypass the trigger entirely and run a machine directly:
 
 ```bash
 fly machine run <image> -a <app> --rm --restart no --region sin \
@@ -125,7 +202,10 @@ Find `<image>` from `fly releases` or `fly image show`. `--rm` deletes the
 machine once it exits; `--restart no` stops Fly from ever restarting a
 one-shot job that's supposed to run once.
 
-**Not yet wired up** (a later slice): a GitHub Actions workflow calling `fly
-machine run` on a nightly cron schedule, and/or an HTTP trigger endpoint the
-schedule can hit instead of shelling out to `flyctl` directly. Until then,
-run the command above manually or from your own cron/launchd.
+### Negative test
+
+Confirm the endpoint rejects an unauthenticated request (expect `401`):
+
+```bash
+curl -i -X POST https://second-brain-bot-old-violet-1669.fly.dev/api/jobs/nightly-summary
+```

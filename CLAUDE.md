@@ -24,10 +24,13 @@ src/second_brain/
     timeutil.py               # today/yesterday/capture_date — timezone-aware date math
     logging.py                 # structlog (summarizer) + stdlib logging setup (bot)
     notify.py                  # send_telegram() via python-telegram-bot directly
+    fly_machines.py             # minimal Fly Machines API client (list/create one-off machines)
     models.py                  # Message, Category, RunResult
   bot/
     handlers.py                # command handlers + register_handlers
-    webhook.py                 # Flask app + serve()
+    webhook.py                 # Flask app + serve(); registers jobs_api's blueprint
+    jobs_api.py                 # POST /api/jobs/nightly-summary — starts the summarizer machine
+    github_oidc.py               # verifies GitHub Actions OIDC bearer tokens for jobs_api
     capture.py                 # Drive inbox file create/append/edit/delete
     google_auth.py             # OAuth flow, TokenStorage (Postgres), CSRF state
     search.py / vault_agent.py  # /search command + agentic vault walker
@@ -59,6 +62,11 @@ tests/{bot,summarizer}/       # offline test suites, no real network calls
 - `summarizer/pipeline.py` — finds the dump, parses it, runs the agent, sends
   notifications; falls back to to-do maintenance when there's nothing to file.
 - `summarizer/agent/prompts.py` — the PARA-filing system prompt; tune here.
+- `bot/jobs_api.py` — `POST /api/jobs/nightly-summary`: OIDC-verified,
+  independent of `_bot_ready()`, starts the summarizer via `core.fly_machines`.
+- `bot/github_oidc.py` — verifies a GitHub Actions OIDC token's signature
+  (GitHub's JWKS) and claims (repo/ref/workflow/event) against an allowlist;
+  raises `OidcRejected`(401) / `PolicyRejected`(403) / `OidcUnavailable`(503).
 
 ## Run / Test
 
@@ -85,6 +93,13 @@ pip install -e ".[dev]"
   fail silently or generically.
 - `--dry-run` on the summarizer must skip both Drive writes and Telegram
   sends — check both when adding a new write/notify path.
+- `summarize` installs handlers for SIGTERM (the job machine's external
+  `timeout` wrapper) and SIGALRM (`SUMMARIZER_MAX_SECONDS`) so a hang or
+  external kill still produces a Telegram failure notice instead of the
+  process just vanishing — see `cli.JobTerminated`/`cli.JobTimedOut`.
+- `config.yaml` is found via `SECOND_BRAIN_CONFIG` env var, then
+  `./config.yaml`, then the repo root — never assume an editable install;
+  the repo-root fallback only works for one.
 
 ## Token Storage
 
