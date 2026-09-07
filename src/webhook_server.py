@@ -170,7 +170,10 @@ def send_message():
         return jsonify({'error': 'internal error'}), 500
 
 
-WEBHOOK_PROCESSING_TIMEOUT_SECONDS = 60
+# Must clear the LLM path's own ceiling: scheduler.create_llm sets a 120s
+# request timeout and generate_schedule retries once, so /timebox alone can
+# legitimately run 240s before it has an answer.
+WEBHOOK_PROCESSING_TIMEOUT_SECONDS = 300
 
 
 def _extract_chat_id(update_data: dict):

@@ -7,6 +7,7 @@ import logging
 import re
 from datetime import datetime
 
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaInMemoryUpload
 
 from google_auth import get_google_service, TokenStorage
@@ -14,6 +15,7 @@ from google_auth import get_google_service, TokenStorage
 logger = logging.getLogger(__name__)
 
 MARKDOWN_MIME_TYPE = 'text/markdown'
+FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder'
 
 # Regex to match comment-style message blocks
 # <!-- msg_id: 12345 | from: @username | date: 2024-02-10 14:30:00 -->
@@ -31,7 +33,7 @@ def get_or_create_folder(service, folder_name: str) -> str | None:
     """
     try:
         results = service.files().list(
-            q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            q=f"name='{folder_name}' and mimeType='{FOLDER_MIME_TYPE}' and trashed=false",
             spaces='drive',
             fields='files(id, name)',
         ).execute()
@@ -44,7 +46,7 @@ def get_or_create_folder(service, folder_name: str) -> str | None:
         # Create new folder
         file_metadata = {
             'name': folder_name,
-            'mimeType': 'application/vnd.google-apps.folder',
+            'mimeType': FOLDER_MIME_TYPE,
         }
         folder = service.files().create(
             body=file_metadata,
@@ -56,6 +58,41 @@ def get_or_create_folder(service, folder_name: str) -> str | None:
     except Exception as e:
         logger.error(f"Failed to get/create folder: {e}")
         return None
+
+def verify_folder(service, folder_id: str) -> bool:
+    """Confirm a Drive folder id exists, isn't trashed, and is actually a folder.
+
+    Used when the knowledge folder is pinned by id (KNOWLEDGE_FOLDER_ID) —
+    unlike name lookup, an id lookup gives no natural "not found" signal, so
+    this catches a wrong/stale/inaccessible id explicitly.
+    """
+    try:
+        meta = service.files().get(fileId=folder_id, fields='mimeType, trashed').execute()
+        return not meta.get('trashed', False) and meta.get('mimeType') == FOLDER_MIME_TYPE
+    except Exception as e:
+        logger.error(f"Failed to verify folder {folder_id}: {e}")
+        return False
+
+
+def find_folder(service, folder_name: str) -> str | None:
+    """Look up a Drive folder by name without creating it if missing.
+
+    Used for folders the bot doesn't own (e.g. the knowledge folder written
+    by the external second-brain service) — unlike `get_or_create_folder`,
+    a miss here means "not there yet", not "make one".
+    """
+    try:
+        results = service.files().list(
+            q=f"name='{folder_name}' and mimeType='{FOLDER_MIME_TYPE}' and trashed=false",
+            spaces='drive',
+            fields='files(id, name)',
+        ).execute()
+        folders = results.get('files', [])
+        return folders[0]['id'] if folders else None
+    except Exception as e:
+        logger.error(f"Failed to find folder: {e}")
+        return None
+
 
 def get_or_create_markdown_file(service, folder_id: str, day_cutoff_hour: int = 0) -> str | None:
     """Find existing markdown file or create a new one in Drive.
@@ -246,14 +283,52 @@ def _replace_message_content(
     return file_content[:header_start] + new_block + file_content[content_end:]
 
 
+def list_folder_contents(service, folder_id: str) -> list[dict]:
+    """Return a folder's direct children as [{id, name, mimeType}, ...] (read-only).
+
+    Includes both files and subfolders of any type — the vault the /search
+    agent walks is a nested tree (Directory.yaml per folder, notes cross-linked
+    across folders), not a flat list of markdown files.
+    """
+    try:
+        results = service.files().list(
+            q=f"trashed=false and '{folder_id}' in parents",
+            spaces='drive',
+            fields='files(id, name, mimeType)',
+            pageSize=1000,
+        ).execute()
+        return results.get('files', [])
+    except Exception as e:
+        logger.error(f"Failed to list folder contents: {e}")
+        return []
+
+
+def read_file(service, file_id: str) -> str | None:
+    """Public read of a Drive file's text content, or None on failure."""
+    return _download_file_content(service, file_id)
+
+
 def _download_file_content(service, file_id: str) -> str | None:
     """Download a file's content from Drive."""
     try:
         content = service.files().get_media(fileId=file_id).execute()
-        return content.decode('utf-8') if isinstance(content, bytes) else content
+    except HttpError as e:
+        # Docs Editors files (the vault's notes) hold no binary content and
+        # 403 on get_media; they only come out via export.
+        if 'fileNotDownloadable' not in str(e):
+            logger.error(f"Failed to download file {file_id}: {e}")
+            return None
+        try:
+            content = service.files().export(
+                fileId=file_id, mimeType='text/plain'
+            ).execute()
+        except Exception as e:
+            logger.error(f"Failed to export file {file_id}: {e}")
+            return None
     except Exception as e:
         logger.error(f"Failed to download file {file_id}: {e}")
         return None
+    return content.decode('utf-8') if isinstance(content, bytes) else content
 
 
 def _upload_file_content(service, file_id: str, content: str) -> bool:
