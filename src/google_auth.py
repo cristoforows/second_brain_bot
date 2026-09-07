@@ -35,15 +35,45 @@ class TokenStorage:
     """Encrypted token storage using PostgreSQL (Supabase) and Fernet encryption."""
 
     def __init__(self, database_url: dict, encryption_key: str):
-        """Initialize token storage with direct PostgreSQL connection pooling."""
+        """Initialize token storage with direct PostgreSQL connection pooling.
+
+        Keepalive kwargs let idle connections survive a Fly machine suspend/
+        resume cycle (scale-to-zero) instead of going stale silently; _checkout()
+        below is the belt-and-suspenders check for when they don't.
+        """
         self.connection_pool = psycopg2.pool.SimpleConnectionPool(1, 10,
             user=database_url['username'],
             password=database_url['password'],
             host=database_url['host'],
             port=database_url['port'],
-            database=database_url['database'])
+            database=database_url['database'],
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3)
         self.fernet = Fernet(encryption_key.encode())
         logger.info("TokenStorage initialized with PostgreSQL connection pool")
+
+    def _checkout(self):
+        """Get a healthy connection from the pool.
+
+        A connection can go stale while idle across a Fly machine suspend/
+        resume — checked out here with SELECT 1 before use. A stale
+        connection (OperationalError/InterfaceError) is discarded (closed,
+        not returned to the pool) and we retry once with a fresh connection.
+        """
+        conn = self.connection_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return conn
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            logger.warning(f"Discarding stale database connection: {e}")
+            self.connection_pool.putconn(conn, close=True)
+            conn = self.connection_pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return conn
 
     def save_user_token(self, user_id: int, token_data: dict) -> None:
         """Save encrypted token to PostgreSQL database."""
@@ -57,7 +87,7 @@ class TokenStorage:
             except (ValueError, TypeError):
                 pass
 
-        conn = self.connection_pool.getconn()
+        conn = self._checkout()
         try:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -80,7 +110,7 @@ class TokenStorage:
 
     def get_user_token(self, user_id: int) -> dict | None:
         """Load and decrypt token from PostgreSQL database."""
-        conn = self.connection_pool.getconn()
+        conn = self._checkout()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -112,7 +142,7 @@ class TokenStorage:
 
     def delete_user_token(self, user_id: int) -> None:
         """Delete token from PostgreSQL database."""
-        conn = self.connection_pool.getconn()
+        conn = self._checkout()
         try:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM user_tokens WHERE user_id = %s", (user_id,))
@@ -127,7 +157,7 @@ class TokenStorage:
 
     def is_authenticated(self, user_id: int) -> bool:
         """Check if user has a stored token."""
-        conn = self.connection_pool.getconn()
+        conn = self._checkout()
         try:
             with conn.cursor() as cur:
                 cur.execute(
