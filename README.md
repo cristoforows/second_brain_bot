@@ -101,15 +101,15 @@ second_brain_bot/
 │   ├── timebox.py          # /timebox conversation: collect next-day tasks, build & publish a schedule
 │   ├── scheduler.py        # Timebox scheduling: target-date, LLM generation, rendering
 │   └── calendar_handler.py # Google Calendar writes for the schedule (tag/list/clear/per-item)
-├── k8s/                    # Kubernetes manifests
 ├── Dockerfile              # Multi-stage Docker build
 ├── docker-compose.yml      # Docker Compose deployment
 ├── requirements.txt        # Python dependencies
+├── requirements-dev.txt    # Test-only dependencies (pytest), not shipped in the image
 ├── .env                   # Your credentials (create from .env.example)
 ├── .env.example           # Template for configuration
 ├── README.md              # This file (user guide)
 ├── DEVELOPMENT.md         # Local development guide
-├── DEPLOY.md              # Docker/Kubernetes deployment guide
+├── DEPLOY.md              # Fly.io deployment guide
 └── CLAUDE.md              # Technical documentation for AI agents
 ```
 

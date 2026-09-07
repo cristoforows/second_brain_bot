@@ -4,11 +4,8 @@
 
 This bot collects data from Telegram chats and dumps it into Google Drive for later processing by a specialized second brain service that will filter and group the data.
 
-> **Note:** Source code now lives under `src/` (not the repo root). Paths
-> below are relative to `src/` unless stated otherwise. The forward-looking
-> "Next Steps", "Phase", and "TODO" sections further down predate the current
-> implementation and are kept only as historical design notes — trust this
-> section and the "Key Files" list over them.
+> **Note:** Source code lives under `src/` (not the repo root). Paths below
+> are relative to `src/` unless stated otherwise.
 
 ## Current State
 
@@ -21,12 +18,17 @@ This bot collects data from Telegram chats and dumps it into Google Drive for la
 - Authentication gate: unauthenticated users are prompted to `/authenticate`
 - Per-user token storage in **PostgreSQL** (encrypted at rest via Fernet), with
   automatic token refresh
-- Commands: `/start`, `/help`, `/authenticate`, `/status`, `/logout`, `/timebox`
+- Commands: `/start`, `/help`, `/authenticate`, `/status`, `/logout`, `/timebox`, `/search`
 - Message collection → per-day markdown files in the user's Google Drive
   (create / append / edit / delete), with a configurable day-cutoff hour
 - `/timebox`: an LLM (OpenRouter via LangChain) turns next-day tasks into a
   timeboxed Schedule, optionally published to a dedicated Google Calendar
+- `/search`: an LLM-driven vault agent walks the user's Google Drive knowledge
+  folder to answer questions over their notes
 - Outbound `POST /api/send-message` endpoint (shared-secret gated)
+- Production webhook server runs Flask under `waitress` (a production WSGI
+  server, 8 threads) instead of Flask's dev server, and exposes `GET /`
+  as an always-on health check used by Fly's `[[http_service.checks]]`
 
 ### Known gaps / rough edges
 - `.env` files created before the `/timebox` feature lack `OPENROUTER_API_KEY`,
@@ -257,205 +259,13 @@ Another message here.
 - Speeds up edit operations
 - Cache format: `{message_id: (filename, byte_offset)}`
 
-## Next Steps (Implementation Order)
-
-### Phase 1: Google Drive Authentication (Step 2 Priority)
-1. **Add Google Drive dependencies** to requirements.txt
-2. **Set up Google Cloud Project**:
-   - Enable Google Drive API
-   - Create OAuth 2.0 credentials (Web application type)
-   - Configure redirect URIs
-   - Add credentials to .env
-3. **Create `google_auth.py` module**:
-   - Generate OAuth authorization URL
-   - Handle OAuth callback/code exchange
-   - Store tokens per user_id in `tokens/` directory
-   - Token refresh logic
-   - Check if user is authenticated
-4. **Create `drive_handler.py` module**:
-   - Initialize Drive API client with user token
-   - Create/find user's markdown file
-   - Download markdown file
-   - Append message to markdown content
-   - Upload modified file back to Drive
-   - Update specific message (for edits)
-5. **Add `/authenticate` command** to bot.py:
-   - Check if user already authenticated
-   - Generate and send OAuth URL
-   - Handle callback (may need webhook endpoint)
-
-### Phase 2: Webhook Setup (Step 1 Priority)
-6. **Set up webhook infrastructure**:
-   - Deploy bot to server with public URL (Heroku, Railway, VPS, etc.)
-   - Or use tunneling service (ngrok) for development
-   - Configure Flask/FastAPI webhook endpoint
-7. **Implement webhook handler**:
-   - Receive POST requests from Telegram
-   - Parse webhook payload (new message, edited message, etc.)
-   - Pass to appropriate handlers
-8. **Register webhook with Telegram**:
-   - Use `setWebhook` API method
-   - URL: `https://your-domain.com/webhook/{bot_token}`
-
-### Phase 3: Message Processing
-9. **Implement authentication gate**:
-   - Check if user authenticated before processing ANY message
-   - If not: send authentication prompt
-   - Block all functionality until authenticated
-10. **Replace echo handler with message collector**:
-    - Extract message_id, text, timestamp, user info
-    - Format as markdown block
-    - Call drive_handler to append to file
-11. **Implement edit message handler**:
-    - Listen for "edited_message" webhook event
-    - Extract message_id
-    - Find and update message in markdown file
-    - Upload modified file
-
-### Phase 4: Testing & Refinement
-12. **Test authentication flow**: User → /authenticate → OAuth → success
-13. **Test message collection**: Send message → appears in Drive markdown
-14. **Test message editing**: Edit message → updates in Drive markdown
-15. **Test token refresh**: Ensure tokens auto-refresh when expired
-16. **Error handling**: Network failures, Drive API errors, token issues
-
-## Technical Decisions Needed
-
-1. **Markdown message format**: Heading style (`## Message ID:`) or comment style (`<!-- msg_id: -->`)?
-2. **File naming convention**: Single file or time-based splits? (`second_brain_inbox.md` vs `inbox_2024_02.md`)
-3. **Drive folder structure**: Root level or nested folders? (`/SecondBrain/telegram_messages.md`)
-4. **OAuth token storage**: File-based per user (`tokens/{user_id}.json`) or database (SQLite)?
-5. **Webhook server**: Flask, FastAPI, or built-in python-telegram-bot webhook support?
-6. **OAuth callback handling**:
-   - Separate web server for callback endpoint?
-   - Or use Telegram inline buttons + polling for auth code?
-7. **Error handling**: What happens if Drive upload fails? Retry queue? Store locally temporarily?
-8. **File size limits**: When to split markdown files? 5MB? 10MB? Monthly?
-9. **Edit message handling**: Download entire file or use Drive API partial updates?
-10. **Deployment**: Where to host? (Heroku, Railway, DigitalOcean, AWS Lambda)
-
-## Dependencies to Add
-
-```txt
-# Google Drive API
-google-auth>=2.28.0
-google-auth-oauthlib>=1.2.0
-google-auth-httplib2>=0.2.0
-google-api-python-client>=2.116.0
-
-# Webhook server (choose one)
-flask>=3.0.0           # Option 1: Flask for webhook endpoint
-# OR
-fastapi>=0.109.0       # Option 2: FastAPI for webhook endpoint
-uvicorn>=0.27.0        # Required for FastAPI
-
-# Already in requirements.txt
-python-telegram-bot
-python-dotenv
-```
-
-## Environment Variables Needed
-
-```env
-# Telegram
-TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
-LOG_LEVEL=INFO
-
-# Webhook Configuration
-WEBHOOK_URL=https://your-domain.com/webhook  # Public URL for Telegram webhooks
-WEBHOOK_PORT=8443  # Port for webhook server (8443, 443, 80, or 88)
-
-# Google Drive OAuth 2.0
-GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your_client_secret
-GOOGLE_REDIRECT_URI=https://your-domain.com/oauth/callback
-# OAuth scopes needed:
-# - https://www.googleapis.com/auth/drive.file (create/access bot's own files)
-
-# Storage
-TOKEN_STORAGE_PATH=./tokens  # Directory to store user OAuth tokens
-DRIVE_FILE_NAME=second_brain_inbox.md  # Name of markdown file in user's Drive
-
-# Optional
-MAX_FILE_SIZE_MB=5  # Split markdown file when exceeds this size
-```
-
-## Known Issues / TODOs
-
-### Critical (Must Have)
-- [ ] Switch from polling to webhooks
-- [ ] Implement Google Drive OAuth 2.0 flow
-- [ ] Create `/authenticate` command
-- [ ] Implement authentication gate (block unauthenticated users)
-- [ ] Build markdown file handler (create, append, edit)
-- [ ] Store message_id for edit tracking
-- [ ] Handle edited_message webhook events
-- [ ] Token storage per user (file-based: `tokens/{user_id}.json`)
-- [ ] Token refresh logic
-
-### Important (Should Have)
-- [ ] Error recovery for failed Drive uploads (retry logic)
-- [ ] File size monitoring and splitting
-- [ ] Webhook server deployment (choose: Flask/FastAPI)
-- [ ] Secure token storage (encryption at rest)
-- [ ] Handle OAuth token expiration gracefully
-- [ ] Logging for Drive operations
-- [ ] User feedback on successful uploads/edits
-
-### Nice to Have
-- [ ] Message queue/buffer for offline scenarios
-- [ ] Monitoring/metrics for data collection
-- [ ] Support for message types beyond text (photos, documents)
-- [ ] Delete message handling
-- [ ] Search functionality in markdown files
-- [ ] Export/download all messages
-- [ ] Multiple markdown files per user (by topic/date)
-
-## Message Flow Example
-
-### Scenario 1: Unauthenticated User
-```
-User: "Hello bot"
-Bot: Check authentication → NOT FOUND
-Bot: "⚠️ Please authenticate with Google Drive first using /authenticate"
-
-User: "/authenticate"
-Bot: Generate OAuth URL
-Bot: "Click here to authorize: https://accounts.google.com/o/oauth2/..."
-User: Clicks, grants permission
-OAuth: Redirect to callback with code
-Bot: Exchange code for tokens
-Bot: Save tokens to tokens/{user_id}.json
-Bot: "✅ Authentication successful! You can now send messages."
-
-User: "Hello bot"
-Bot: Check authentication → FOUND
-Bot: Process message → Format markdown → Upload to Drive
-Bot: "✅ Message saved to your Drive"
-```
-
-### Scenario 2: Message Edit
-```
-User: "Original message"
-Bot: Save to Drive as message_id: 12345
-
-User: Edits message to "Updated message"
-Telegram: Sends edited_message webhook
-Bot: Extract message_id: 12345
-Bot: Download markdown file
-Bot: Find message with ID 12345
-Bot: Replace content
-Bot: Upload updated file
-Bot: (Optional) "✅ Message updated in Drive"
-```
-
 ## Development Notes
 
-- Virtual environment: `venv/` (excluded from git)
-- Python version: 3.8+
+- Virtual environment: `.venv/` (excluded from git)
+- Python version: 3.11
 - Bot uses async/await pattern throughout
 - Logging configured at module level
 - Error handlers catch exceptions at handler level
-- Test webhook locally with ngrok before deploying
-- Store tokens in `tokens/` directory (add to .gitignore)
-- Use environment-specific .env files (.env.development, .env.production)
+- Test webhook locally with ngrok before deploying (see DEVELOPMENT.md)
+- Token storage is PostgreSQL, not files — the legacy `tokens/` directory is unused
+- Run tests with `.venv/bin/python -m pytest -q` (see CI: `.github/workflows/ci.yml`)

@@ -49,16 +49,10 @@ Since Telegram webhooks require a public HTTPS URL, you need to expose your loca
    - Send `/authenticate` — bot sends a Google OAuth URL
    - Complete OAuth, then send any message — it gets saved to your Drive
 
-### Option 2: Deploy to a Server
+### Option 2: Deploy to Fly.io
 
-For production or testing without ngrok:
-
-1. Deploy to a server with a public IP (DigitalOcean, AWS, etc.)
-2. Set up HTTPS with a valid SSL certificate (Let's Encrypt)
-3. Update `WEBHOOK_URL` in `.env` to your server's URL
-4. Run `./start_webhook.sh` or `python3 src/webhook_server.py`
-
-See [DEPLOY.md](DEPLOY.md) for full Docker/Kubernetes deployment instructions.
+For production, without ngrok — see [DEPLOY.md](DEPLOY.md) for the full Fly.io
+deploy guide (secrets, `fly deploy`, verification, rollback).
 
 ---
 
@@ -207,17 +201,18 @@ second_brain_bot/
 │   ├── timebox.py          # /timebox conversation (collect tasks → schedule → publish)
 │   ├── scheduler.py        # Timebox target-date, LLM schedule generation, rendering
 │   └── calendar_handler.py # Google Calendar writes for the schedule
-├── tests/                  # pytest suite (scheduler, calendar_handler)
-├── k8s/                    # Kubernetes manifests
+├── tests/                  # pytest suite (scheduler, calendar_handler, google_auth, webhook_server, vault_agent, ...)
+├── .github/workflows/      # ci.yml: install + pytest on push/PR
 ├── Dockerfile              # Multi-stage build (python:3.11-slim)
 ├── docker-compose.yml      # Local/small-scale Docker deployment
 ├── requirements.txt        # Python dependencies
+├── requirements-dev.txt    # Test-only dependencies (pytest), not shipped in the image
 ├── start_webhook.sh        # Helper script to start the webhook server
 ├── run_local.sh            # Helper script for local development
 ├── .env                    # Your credentials (never commit)
 ├── .env.example            # Template for .env
 ├── README.md               # User guide
 ├── DEVELOPMENT.md          # This file
-├── DEPLOY.md               # Docker/Kubernetes deployment guide
+├── DEPLOY.md               # Fly.io deployment guide
 └── CLAUDE.md               # Technical documentation for AI agents
 ```
