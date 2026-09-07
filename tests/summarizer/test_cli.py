@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import signal
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from second_brain import cli
 
@@ -20,6 +23,7 @@ def _make_settings() -> MagicMock:
     settings.app_timezone = "Asia/Singapore"
     settings.summarizer_log_dir = ""
     settings.summary_chat_id = "chat-1"
+    settings.summarizer_max_seconds = 2100
     return settings
 
 
@@ -120,3 +124,109 @@ def test_summarize_error_message_truncated_to_300_chars(
     # message body itself is capped at 300 chars, regardless of the fixed prefix
     assert "x" * 300 in text
     assert "x" * 301 not in text
+
+
+# ---------------------------------------------------------------------------
+# SIGTERM / SIGALRM handling (F2)
+# ---------------------------------------------------------------------------
+
+
+def test_sigterm_handler_raises_job_terminated():
+    with pytest.raises(cli.JobTerminated):
+        cli._sigterm_handler(signal.SIGTERM, None)
+
+
+def test_sigalrm_handler_raises_job_timed_out():
+    with pytest.raises(cli.JobTimedOut):
+        cli._sigalrm_handler(signal.SIGALRM, None)
+
+
+@patch(f"{_MODULE}.send_telegram")
+@patch(f"{_MODULE}.configure_logging")
+@patch(f"{_MODULE}.pipeline")
+@patch(f"{_MODULE}.get_settings")
+def test_summarize_job_terminated_reports_failure_and_returns_one(
+    mock_get_settings, mock_pipeline, mock_configure_logging, mock_send
+):
+    """A SIGTERM arriving mid-run (simulated here by run_pipeline raising
+    JobTerminated directly, as the real handler would) goes through the same
+    failure-notification path as any other exception."""
+    mock_get_settings.return_value = _make_settings()
+    mock_configure_logging.return_value = None
+    mock_pipeline.resolve_date_str.return_value = "2026-01-01"
+    mock_pipeline.run_pipeline.side_effect = cli.JobTerminated("received signal 15")
+
+    exit_code = cli._cmd_summarize(_args())
+
+    assert exit_code == 1
+    mock_send.assert_called_once()
+    text = mock_send.call_args[0][1]
+    assert "JobTerminated" in text
+
+
+@patch(f"{_MODULE}.send_telegram")
+@patch(f"{_MODULE}.configure_logging")
+@patch(f"{_MODULE}.pipeline")
+@patch(f"{_MODULE}.get_settings")
+def test_summarize_job_timed_out_reports_failure_and_returns_one(
+    mock_get_settings, mock_pipeline, mock_configure_logging, mock_send
+):
+    mock_get_settings.return_value = _make_settings()
+    mock_configure_logging.return_value = None
+    mock_pipeline.resolve_date_str.return_value = "2026-01-01"
+    mock_pipeline.run_pipeline.side_effect = cli.JobTimedOut("exceeded budget")
+
+    exit_code = cli._cmd_summarize(_args())
+
+    assert exit_code == 1
+    mock_send.assert_called_once()
+    text = mock_send.call_args[0][1]
+    assert "JobTimedOut" in text
+
+
+@patch(f"{_MODULE}.send_telegram")
+@patch(f"{_MODULE}.configure_logging")
+@patch(f"{_MODULE}.pipeline")
+@patch(f"{_MODULE}.get_settings")
+@patch(f"{_MODULE}.signal")
+def test_summarize_arms_and_cancels_alarm_on_success(
+    mock_signal, mock_get_settings, mock_pipeline, mock_configure_logging, mock_send
+):
+    """The alarm is armed with SUMMARIZER_MAX_SECONDS at the start and
+    cancelled (signal.alarm(0)) even on a successful run — never left
+    ticking after `summarize` returns."""
+    mock_signal.SIGTERM = signal.SIGTERM
+    mock_signal.SIGALRM = signal.SIGALRM
+    mock_get_settings.return_value = _make_settings()
+    mock_configure_logging.return_value = None
+    mock_pipeline.resolve_date_str.return_value = "2026-01-01"
+    result = MagicMock(mode="messages", message_count=1, date="2026-01-01")
+    mock_pipeline.run_pipeline.return_value = result
+
+    exit_code = cli._cmd_summarize(_args())
+
+    assert exit_code == 0
+    mock_signal.alarm.assert_any_call(2100)
+    mock_signal.alarm.assert_called_with(0)  # last call cancels it
+    mock_send.assert_not_called()
+
+
+@patch(f"{_MODULE}.send_telegram")
+@patch(f"{_MODULE}.configure_logging")
+@patch(f"{_MODULE}.pipeline")
+@patch(f"{_MODULE}.get_settings")
+@patch(f"{_MODULE}.signal")
+def test_summarize_cancels_alarm_on_failure_too(
+    mock_signal, mock_get_settings, mock_pipeline, mock_configure_logging, mock_send
+):
+    mock_signal.SIGTERM = signal.SIGTERM
+    mock_signal.SIGALRM = signal.SIGALRM
+    mock_get_settings.return_value = _make_settings()
+    mock_configure_logging.return_value = None
+    mock_pipeline.resolve_date_str.return_value = "2026-01-01"
+    mock_pipeline.run_pipeline.side_effect = cli.JobTimedOut("exceeded budget")
+
+    exit_code = cli._cmd_summarize(_args())
+
+    assert exit_code == 1
+    mock_signal.alarm.assert_called_with(0)

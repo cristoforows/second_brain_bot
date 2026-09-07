@@ -141,6 +141,11 @@ class Settings(BaseSettings):
     vault_folder_id: str = Field(default="", validation_alias="VAULT_FOLDER_ID")
     summary_chat_id: str = Field(default="", validation_alias="SUMMARY_CHAT_ID")
     summarizer_log_dir: str = Field(default="", validation_alias="SUMMARIZER_LOG_DIR")
+    # Wall-clock budget for one `summarize` run, enforced with signal.alarm.
+    # Default (2100s = 35min) matches the job machine's `timeout -k 60 2100`
+    # wrapper, so our own alarm fires first and reports a clean failure
+    # instead of the job simply vanishing when the external timeout SIGKILLs it.
+    summarizer_max_seconds: int = Field(default=2100, validation_alias="SUMMARIZER_MAX_SECONDS")
 
     # --- Non-secrets (from config.yaml) ---
     llm: LLMConfig = Field(default_factory=LLMConfig)

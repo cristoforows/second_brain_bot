@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 
 import structlog
@@ -24,6 +25,35 @@ from second_brain.summarizer import pipeline
 log = structlog.get_logger()
 
 _ERROR_MSG_MAX_LEN = 300
+
+
+class JobTerminated(RuntimeError):
+    """Raised when SIGTERM arrives during a `summarize` run.
+
+    The job machine wraps `second-brain summarize` in `timeout -k 60 2100`:
+    if the process hasn't exited by the deadline, `timeout` sends SIGTERM
+    (then SIGKILL 60s later if that doesn't work). Without a handler, SIGTERM
+    kills the process outright and no Telegram failure notice ever goes out —
+    this turns it into a normal exception so it flows through the same
+    failure-notification path as any other error.
+    """
+
+
+class JobTimedOut(RuntimeError):
+    """Raised by SIGALRM when a `summarize` run exceeds SUMMARIZER_MAX_SECONDS.
+
+    This is *our own* budget, set below the external `timeout` wrapper's
+    deadline, so we get a chance to report a clean failure before the
+    external timeout escalates to SIGTERM/SIGKILL.
+    """
+
+
+def _sigterm_handler(signum, frame) -> None:
+    raise JobTerminated(f"received signal {signum}")
+
+
+def _sigalrm_handler(signum, frame) -> None:
+    raise JobTimedOut("summarizer exceeded SUMMARIZER_MAX_SECONDS")
 
 
 def _cmd_serve(_args: argparse.Namespace) -> int:
@@ -90,6 +120,13 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
         log.info("dry_run_mode_enabled")
         print("[dry-run] No changes will be written to Google Drive.")
 
+    # SIGTERM (the job machine's `timeout -k 60 2100` wrapper escalating) and
+    # our own wall-clock budget (SIGALRM) both need to produce the same
+    # Telegram failure notice a plain exception would — installed only for
+    # the duration of this call, and always restored/disarmed afterwards.
+    previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_handler)
+    previous_sigalrm = signal.signal(signal.SIGALRM, _sigalrm_handler)
+    signal.alarm(settings.summarizer_max_seconds)
     try:
         result = pipeline.run_pipeline(date_str=resolved_date, dry_run=args.dry_run)
     except (Exception, KeyboardInterrupt) as e:
@@ -102,6 +139,10 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
             except Exception:
                 log.error("failure_notification_failed", exc_info=True)
         return 1
+    finally:
+        signal.alarm(0)  # cancel the alarm — must happen on success too
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGALRM, previous_sigalrm)
 
     if result.mode == "messages":
         print(f"Processed {result.message_count} messages from {result.date}.md.")
