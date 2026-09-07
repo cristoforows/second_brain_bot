@@ -1,4 +1,8 @@
-from drive_handler import FOLDER_MIME_TYPE, list_folder_contents, verify_folder
+import json
+
+from googleapiclient.errors import HttpError
+
+from drive_handler import FOLDER_MIME_TYPE, _download_file_content, list_folder_contents, verify_folder
 
 
 class _FakeExecute:
@@ -29,6 +33,98 @@ class _FakeService:
 
     def files(self):
         return self._files
+
+
+class _FakeResp:
+    def __init__(self, status=403, reason="Forbidden"):
+        self.status = status
+        self.reason = reason
+
+
+def _http_error(reason: str) -> HttpError:
+    """Build an HttpError shaped like a real Drive API error body, where the
+    machine-readable `reason` lives in error.errors[].reason (not just in the
+    human-readable top-level message)."""
+    content = json.dumps({
+        "error": {
+            "errors": [{"domain": "global", "reason": reason, "message": reason}],
+            "code": 403,
+            "message": reason,
+        }
+    }).encode("utf-8")
+    return HttpError(_FakeResp(), content)
+
+
+class _FakeDownloadFiles:
+    """Fake files() resource supporting get_media/export, for
+    _download_file_content tests."""
+
+    def __init__(self, get_media_result=None, export_result=None):
+        self._get_media_result = get_media_result
+        self._export_result = export_result
+        self.export_called_with = None
+
+    def get_media(self, fileId):
+        return _FakeExecute(self._get_media_result)
+
+    def export(self, fileId, mimeType):
+        self.export_called_with = {"fileId": fileId, "mimeType": mimeType}
+        return _FakeExecute(self._export_result)
+
+
+class _FakeDownloadService:
+    def __init__(self, get_media_result=None, export_result=None):
+        self._files = _FakeDownloadFiles(get_media_result, export_result)
+
+    def files(self):
+        return self._files
+
+
+# --- _download_file_content ---
+
+
+def test_download_file_content_normal_path_bytes():
+    service = _FakeDownloadService(get_media_result=b"hello world")
+    assert _download_file_content(service, "f1") == "hello world"
+    assert service._files.export_called_with is None
+
+
+def test_download_file_content_normal_path_str():
+    service = _FakeDownloadService(get_media_result="hello world")
+    assert _download_file_content(service, "f1") == "hello world"
+    assert service._files.export_called_with is None
+
+
+def test_download_file_content_falls_back_to_export_on_file_not_downloadable():
+    service = _FakeDownloadService(
+        get_media_result=_http_error("fileNotDownloadable"),
+        export_result=b"exported note text",
+    )
+
+    result = _download_file_content(service, "f1")
+
+    assert result == "exported note text"
+    assert service._files.export_called_with == {"fileId": "f1", "mimeType": "text/plain"}
+
+
+def test_download_file_content_returns_none_on_other_http_error():
+    service = _FakeDownloadService(get_media_result=_http_error("insufficientFilePermissions"))
+
+    result = _download_file_content(service, "f1")
+
+    assert result is None
+    assert service._files.export_called_with is None
+
+
+def test_download_file_content_returns_none_when_export_itself_fails():
+    service = _FakeDownloadService(
+        get_media_result=_http_error("fileNotDownloadable"),
+        export_result=Exception("export boom"),
+    )
+
+    result = _download_file_content(service, "f1")
+
+    assert result is None
 
 
 # --- verify_folder ---
