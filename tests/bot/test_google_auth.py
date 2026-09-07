@@ -1,6 +1,6 @@
 import psycopg2
 
-from google_auth import TokenStorage, has_calendar_scope, has_drive_read_scope
+from second_brain.bot.google_auth import TokenStorage, has_calendar_scope, has_drive_read_scope
 
 
 class _FakeTokenStorage:

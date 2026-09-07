@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from second_brain.agent.agent import _format_messages, build_agent, run_agent
-from second_brain.agent.llm import create_llm
-from second_brain.agent.prompts import SYSTEM_PROMPT, build_system_prompt
-from second_brain.core.config import Settings
+import pytest
+
+from second_brain.core.llm import create_llm
 from second_brain.core.models import Message
+from second_brain.summarizer.agent.agent import _format_messages, build_agent, run_agent
+from second_brain.summarizer.agent.prompts import SYSTEM_PROMPT, build_system_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -35,14 +36,29 @@ class TestPrompts:
 
 class TestLLMFactory:
     def test_create_llm_returns_chat_openai(self) -> None:
-        settings = Settings(
-            openrouter_api_key="sk-test-key",
-            llm={"model": "test/model", "temperature": 0.5, "max_tokens": 1024},
+        llm = create_llm(
+            "sk-test-key",
+            "test/model",
+            timeout=1800,
+            temperature=0.5,
+            max_tokens=1024,
         )
-        llm = create_llm(settings)
         assert llm.model_name == "test/model"
         assert llm.temperature == 0.5
         assert llm.max_tokens == 1024
+
+    def test_create_llm_raises_without_api_key(self) -> None:
+        with pytest.raises(ValueError):
+            create_llm("", "test/model", timeout=120)
+
+    def test_create_llm_applies_provider_routing(self) -> None:
+        llm = create_llm(
+            "sk-test-key",
+            "test/model",
+            timeout=1800,
+            provider={"ignore": ["SomeProvider"]},
+        )
+        assert llm.extra_body.get("provider") == {"ignore": ["SomeProvider"]}
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +92,7 @@ class TestFormatMessages:
 # ---------------------------------------------------------------------------
 
 class TestBuildAgent:
-    @patch("second_brain.agent.agent.create_react_agent")
+    @patch("second_brain.summarizer.agent.agent.create_react_agent")
     def test_build_agent_calls_create_react_agent(self, mock_create: MagicMock) -> None:
         mock_llm = MagicMock()
         mock_tools = [MagicMock(), MagicMock()]
@@ -89,7 +105,7 @@ class TestBuildAgent:
 
 
 class TestRunAgent:
-    @patch("second_brain.agent.agent.create_react_agent")
+    @patch("second_brain.summarizer.agent.agent.create_react_agent")
     def test_run_agent_invokes_with_formatted_messages(self, mock_create: MagicMock) -> None:
         mock_agent = MagicMock()
         mock_agent.invoke.return_value = {"messages": ["done"]}

@@ -1,7 +1,7 @@
 from datetime import date
 
-import calendar_handler
-from calendar_handler import (
+from second_brain.bot import calendar_handler
+from second_brain.bot.calendar_handler import (
     SOURCE_KEY,
     SOURCE_VALUE,
     clear_timebox_events,
@@ -9,7 +9,7 @@ from calendar_handler import (
     list_timebox_events,
     write_schedule,
 )
-from scheduler import ScheduleItem
+from second_brain.bot.timebox_planner import ScheduleItem
 
 SG = "Asia/Singapore"  # UTC+8, no DST
 CAL = "abc@group.calendar.google.com"

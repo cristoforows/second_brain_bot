@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from second_brain.tools import drive_tools
-from second_brain.tools.drive_tools import (
+from second_brain.summarizer.tools import drive_tools
+from second_brain.summarizer.tools.drive_tools import (
     _resolve_folder,
     create_new_category,
     init_tools,

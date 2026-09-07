@@ -3,23 +3,24 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from second_brain.core.models import RunResult
-from second_brain.main import run_pipeline
+from second_brain.summarizer.pipeline import run_pipeline
 
 
-_MODULE = "second_brain.main"
+_MODULE = "second_brain.summarizer.pipeline"
 
 
 def _make_settings() -> MagicMock:
     settings = MagicMock()
     settings.google_service_refresh_token = "/fake/sa.json"
     settings.input_drive_folder_id = "input-folder"
-    settings.output_drive_folder_id = "output-folder"
+    settings.vault_folder_id = "vault-folder"
+    settings.summary_chat_id = "chat-123"
     settings.app_timezone = "Asia/Singapore"
-    # Empty telegram config so _init_agent skips telegram setup and
-    # send_notification short-circuits without an HTTP call.
-    settings.telegram_outbound_url = ""
-    settings.telegram_outbound_secret = ""
-    settings.telegram_chat_id = ""
+    settings.openrouter_api_key = "sk-test-key"
+    settings.llm.model = "test/model"
+    settings.llm.max_tokens = 4096
+    settings.llm.temperature = 0.3
+    settings.llm.provider = None
     return settings
 
 
@@ -55,7 +56,7 @@ def test_full_pipeline(
 
     # Verify the pipeline steps
     mock_drive_cls.assert_called_once_with("/fake/sa.json")
-    mock_init_tools.assert_called_once_with(drive, "output-folder", dry_run=False)
+    mock_init_tools.assert_called_once_with(drive, "vault-folder", dry_run=False)
     drive.find_file.assert_any_call("input-folder", "2025-03-01.md")
     drive.read_file_raw.assert_any_call("dump-id", "2025-03-01.md")
     mock_create_llm.assert_called_once()
@@ -202,3 +203,38 @@ def test_pipeline_notify_receives_summary_then_todos_in_order(
 
     assert result.mode == "messages"
     assert result.message_count == 5
+
+
+@patch(f"{_MODULE}.run_agent_with_prompt")
+@patch(f"{_MODULE}.run_agent")
+@patch(f"{_MODULE}.build_agent")
+@patch(f"{_MODULE}.create_llm")
+@patch(f"{_MODULE}.init_tools")
+@patch(f"{_MODULE}.DriveService")
+@patch(f"{_MODULE}.get_settings")
+def test_pipeline_defaults_to_yesterday_when_no_date_given(
+    mock_settings: MagicMock,
+    mock_drive_cls: MagicMock,
+    mock_init_tools: MagicMock,
+    mock_create_llm: MagicMock,
+    mock_build_agent: MagicMock,
+    mock_run_agent: MagicMock,
+    mock_run_agent_with_prompt: MagicMock,
+) -> None:
+    """With no date_str given, the pipeline resolves to yesterday in
+    APP_TIMEZONE (the nightly job's target date) — not today."""
+    from second_brain.core.timeutil import yesterday
+
+    settings = _make_settings()
+    mock_settings.return_value = settings
+
+    drive = mock_drive_cls.return_value
+    drive.find_file.return_value = None
+    drive._updates = []
+    drive._reads = []
+
+    result = run_pipeline()
+
+    expected = yesterday(settings.app_timezone).isoformat()
+    assert result.date == expected
+    drive.find_file.assert_any_call("input-folder", f"{expected}.md")

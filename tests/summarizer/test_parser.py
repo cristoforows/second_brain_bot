@@ -1,5 +1,5 @@
 from second_brain.core.models import Message
-from second_brain.utils.parser import parse_dump
+from second_brain.summarizer.parser import parse_dump
 
 
 def test_parse_sample_dump(sample_dump_text: str) -> None:

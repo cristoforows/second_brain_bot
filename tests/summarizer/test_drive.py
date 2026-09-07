@@ -4,15 +4,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from second_brain.services.drive import DriveService
+from second_brain.summarizer.drive import DriveService
 
 
 @pytest.fixture
 def drive() -> DriveService:
     """Create a DriveService with mocked credentials loading and API client."""
     with (
-        patch("second_brain.services.drive._load_credentials") as mock_load,
-        patch("second_brain.services.drive.build") as mock_build,
+        patch("second_brain.summarizer.drive._load_credentials") as mock_load,
+        patch("second_brain.summarizer.drive.build") as mock_build,
     ):
         mock_load.return_value = MagicMock()
         service = DriveService("/fake/path.json")

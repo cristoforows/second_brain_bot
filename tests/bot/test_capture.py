@@ -1,8 +1,13 @@
 import json
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from googleapiclient.errors import HttpError
 
-from drive_handler import FOLDER_MIME_TYPE, _download_file_content, list_folder_contents, verify_folder
+from second_brain.bot.capture import FOLDER_MIME_TYPE, _download_file_content, list_folder_contents, verify_folder
+from second_brain.core.timeutil import capture_date
+
+SG = "Asia/Singapore"  # UTC+8, no DST
 
 
 class _FakeExecute:
@@ -162,3 +167,51 @@ def test_list_folder_contents_returns_children():
 def test_list_folder_contents_returns_empty_on_api_error():
     service = _FakeService(list_result=Exception("boom"))
     assert list_folder_contents(service, "root") == []
+
+
+# --- capture_date ---
+
+
+def test_capture_date_disabled_cutoff_uses_calendar_date():
+    """day_cutoff_hour=0 means disabled — always the local calendar date,
+    even right at midnight."""
+    now = datetime(2026, 6, 12, 0, 0, tzinfo=ZoneInfo(SG))
+    assert capture_date(now, SG, 0) == date(2026, 6, 12)
+
+
+def test_capture_date_just_before_cutoff_uses_previous_day():
+    """A message at 03:59 local time, with a 04:00 cutoff, belongs to
+    yesterday's file."""
+    now = datetime(2026, 6, 12, 3, 59, tzinfo=ZoneInfo(SG))
+    assert capture_date(now, SG, 4) == date(2026, 6, 11)
+
+
+def test_capture_date_at_cutoff_hour_uses_current_day():
+    """Exactly at the cutoff hour, the cutoff no longer applies."""
+    now = datetime(2026, 6, 12, 4, 0, tzinfo=ZoneInfo(SG))
+    assert capture_date(now, SG, 4) == date(2026, 6, 12)
+
+
+def test_capture_date_just_after_midnight_before_cutoff():
+    """01:00 local, cutoff at 4 — still belongs to the previous day."""
+    now = datetime(2026, 6, 12, 1, 0, tzinfo=ZoneInfo(SG))
+    assert capture_date(now, SG, 4) == date(2026, 6, 11)
+
+
+def test_capture_date_well_after_cutoff_uses_current_day():
+    now = datetime(2026, 6, 12, 14, 30, tzinfo=ZoneInfo(SG))
+    assert capture_date(now, SG, 4) == date(2026, 6, 12)
+
+
+def test_capture_date_converts_utc_to_local_timezone():
+    """A UTC timestamp is converted to the configured timezone before
+    applying the cutoff — this is the fix for using the container clock."""
+    # 20:30 UTC == 04:30 SGT (UTC+8) the next day — after the 04:00 cutoff,
+    # so it belongs to that next SGT day, not the UTC day.
+    now = datetime(2026, 6, 11, 20, 30, tzinfo=timezone.utc)
+    assert capture_date(now, SG, 4) == date(2026, 6, 12)
+
+
+def test_capture_date_naive_datetime_assumed_to_already_be_local():
+    now = datetime(2026, 6, 12, 2, 0)  # naive
+    assert capture_date(now, SG, 4) == date(2026, 6, 11)

@@ -1,7 +1,7 @@
 from langchain_core.messages import AIMessage
 
-import drive_handler
-from vault_agent import SearchAgentError, _build_tools, run_agent
+from second_brain.bot import capture as drive_handler
+from second_brain.bot.vault_agent import SearchAgentError, _build_tools, run_agent
 
 _MAX_FILE_CHARS = 6000
 

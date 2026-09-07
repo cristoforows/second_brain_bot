@@ -1,18 +1,18 @@
-"""Tests for webhook_server's Flask routes using Flask's test client.
+"""Tests for webhook's Flask routes using Flask's test client.
 
 Deliberately does NOT start any threads or import the real bot stack
-(python-telegram-bot, bot.py) — routes that need bot_app/event_loop/
-token_storage/Update are exercised by monkeypatching those globals to
-sentinels, matching how _bot_ready() gates them in production during the
-startup window before _load_bot_modules() has run.
+(python-telegram-bot, second_brain.bot.handlers) — routes that need
+bot_app/event_loop/token_storage/Update are exercised by monkeypatching those
+globals to sentinels, matching how _bot_ready() gates them in production
+during the startup window before _load_bot_modules() has run.
 """
 import os
 import subprocess
 import sys
 from unittest.mock import Mock
 
-import webhook_server
-from config import config
+from second_brain.bot import webhook as webhook_server
+from second_brain.core.config import config
 
 
 def _make_client():
@@ -126,16 +126,14 @@ def test_oauth_callback_not_ready_returns_503(monkeypatch):
     assert resp.status_code == 503
 
 
-def test_importing_webhook_server_does_not_import_telegram_or_bot():
+def test_importing_webhook_does_not_import_telegram_or_handlers():
     """A fresh interpreter, not this test session's sys.modules (already
     polluted by other test modules), is the only reliable way to check this."""
-    src_dir = os.path.join(os.path.dirname(__file__), '..', 'src')
     code = (
         "import sys\n"
-        f"sys.path.insert(0, {src_dir!r})\n"
-        "import webhook_server\n"
+        "import second_brain.bot.webhook\n"
         "assert 'telegram' not in sys.modules, 'telegram was imported at module load'\n"
-        "assert 'bot' not in sys.modules, 'bot was imported at module load'\n"
+        "assert 'second_brain.bot.handlers' not in sys.modules, 'handlers was imported at module load'\n"
         "print('OK')\n"
     )
     result = subprocess.run(

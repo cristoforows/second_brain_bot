@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from scheduler import (
+from second_brain.bot.timebox_planner import (
     DayConfig,
     DroppedTask,
     ScheduleItem,
