@@ -7,6 +7,7 @@ import logging
 import re
 from datetime import datetime
 
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaInMemoryUpload
 
 from google_auth import get_google_service, TokenStorage
@@ -311,10 +312,23 @@ def _download_file_content(service, file_id: str) -> str | None:
     """Download a file's content from Drive."""
     try:
         content = service.files().get_media(fileId=file_id).execute()
-        return content.decode('utf-8') if isinstance(content, bytes) else content
+    except HttpError as e:
+        # Docs Editors files (the vault's notes) hold no binary content and
+        # 403 on get_media; they only come out via export.
+        if 'fileNotDownloadable' not in str(e):
+            logger.error(f"Failed to download file {file_id}: {e}")
+            return None
+        try:
+            content = service.files().export(
+                fileId=file_id, mimeType='text/plain'
+            ).execute()
+        except Exception as e:
+            logger.error(f"Failed to export file {file_id}: {e}")
+            return None
     except Exception as e:
         logger.error(f"Failed to download file {file_id}: {e}")
         return None
+    return content.decode('utf-8') if isinstance(content, bytes) else content
 
 
 def _upload_file_content(service, file_id: str, content: str) -> bool:
