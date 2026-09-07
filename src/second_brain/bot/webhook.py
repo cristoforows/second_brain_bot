@@ -18,6 +18,7 @@ import threading
 import waitress
 from flask import Flask, request, Response, jsonify
 
+from second_brain.bot.jobs_api import jobs_bp
 from second_brain.core.config import config
 
 # Configure logging
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Create Flask app
 app = Flask(__name__)
+
+# POST /api/jobs/nightly-summary — independent of the bot stack below (never
+# touches bot_app/event_loop/token_storage), so it's registered directly and
+# doesn't gate on _bot_ready().
+app.register_blueprint(jobs_bp)
 
 # The rest of the bot stack (python-telegram-bot, and transitively Drive,
 # Calendar, and the langchain-based /timebox LLM client) is heavy to import —
