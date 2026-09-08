@@ -30,6 +30,10 @@ SCOPES = [
 # Maps state string -> {"user_id": int, "expires": float}
 _state_cache: dict[str, dict] = {}
 
+# Max size of the connection pool below (SimpleConnectionPool(1, 10, ...)).
+# _checkout() uses this to bound its stale-connection retry loop.
+_POOL_MAX_SIZE = 10
+
 
 class TokenStorage:
     """Encrypted token storage using PostgreSQL (Supabase) and Fernet encryption."""
@@ -40,8 +44,15 @@ class TokenStorage:
         Keepalive kwargs let idle connections survive a Fly machine suspend/
         resume cycle (scale-to-zero) instead of going stale silently; _checkout()
         below is the belt-and-suspenders check for when they don't.
+
+        connect_timeout/tcp_user_timeout bound how long libpq will wait on a
+        dead socket. A suspended VM's TCP timers are frozen, so on resume the
+        first write to a stale connection looks like a live socket that just
+        isn't responding; without these, libpq falls back to the kernel's TCP
+        retransmit timeout (~2 minutes) before giving up. With them, a dead
+        connection fails in single-digit seconds instead.
         """
-        self.connection_pool = psycopg2.pool.SimpleConnectionPool(1, 10,
+        self.connection_pool = psycopg2.pool.SimpleConnectionPool(1, _POOL_MAX_SIZE,
             user=database_url['username'],
             password=database_url['password'],
             host=database_url['host'],
@@ -50,7 +61,9 @@ class TokenStorage:
             keepalives=1,
             keepalives_idle=30,
             keepalives_interval=10,
-            keepalives_count=3)
+            keepalives_count=3,
+            connect_timeout=10,
+            tcp_user_timeout=10000)
         self.fernet = Fernet(encryption_key.encode())
         logger.info("TokenStorage initialized with PostgreSQL connection pool")
 
@@ -58,29 +71,31 @@ class TokenStorage:
         """Get a healthy connection from the pool.
 
         A connection can go stale while idle across a Fly machine suspend/
-        resume — checked out here with SELECT 1 before use. A stale
-        connection (OperationalError/InterfaceError) is discarded (closed,
-        not returned to the pool) and we retry once with a fresh connection.
-        If that retry also fails, the second connection is closed too
-        (rather than leaked) before the error propagates.
+        resume — checked out here with SELECT 1 before use. Any failure of
+        that health check (psycopg2.Error and all its subclasses —
+        DatabaseError, OperationalError, InterfaceError, etc. — not just the
+        two we used to special-case) means the connection is unusable, so it
+        is discarded (closed, not returned to the pool) and we try again
+        with a fresh one. The pool hands out at most _POOL_MAX_SIZE
+        connections, and a long enough suspend can leave every single one of
+        them dead, so we retry up to _POOL_MAX_SIZE + 1 times (one extra for
+        the connection the pool creates fresh once the pool itself is
+        empty) before giving up. If every attempt fails, the last exception
+        propagates, with that final connection already closed — never
+        leaked.
         """
-        conn = self.connection_pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-            return conn
-        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-            logger.warning(f"Discarding stale database connection: {e}")
-            self.connection_pool.putconn(conn, close=True)
+        last_exc = None
+        for _ in range(_POOL_MAX_SIZE + 1):
             conn = self.connection_pool.getconn()
             try:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1")
                 return conn
-            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e2:
-                logger.warning(f"Discarding stale database connection on retry: {e2}")
+            except psycopg2.Error as e:
+                logger.warning(f"Discarding stale database connection: {e}")
                 self.connection_pool.putconn(conn, close=True)
-                raise
+                last_exc = e
+        raise last_exc
 
     def save_user_token(self, user_id: int, token_data: dict) -> None:
         """Save encrypted token to PostgreSQL database."""
