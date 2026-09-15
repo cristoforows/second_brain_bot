@@ -2,7 +2,7 @@ name: Nightly summary
 
 on:
   schedule:
-    - cron: "5 20 * * *"   # 04:05 Asia/Singapore
+    - cron: "23 20 * * *"   # 04:23 Asia/Singapore, deliberately off the congested :00-:10 window
   workflow_dispatch:
     inputs:
       date:    { description: "YYYY-MM-DD (default: yesterday SGT)", required: false }

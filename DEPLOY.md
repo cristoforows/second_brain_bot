@@ -123,7 +123,7 @@ deploy), just invoked with a different command.
 ### How the trigger works
 
 ```
-GitHub Actions (cron, 04:05 SGT)
+GitHub Actions (cron, 04:23 SGT)
   │  requests a short-lived OIDC ID token from GitHub
   ▼
 POST /api/jobs/nightly-summary  (the bot, always-on)
@@ -142,6 +142,13 @@ Telegram: run summary + active to-do digest (or a ❌ failure notice)
 There is no long-lived secret in the workflow at all — GitHub signs the
 identity token itself, and the bot verifies it against `NIGHTLY_ALLOWED_*`
 settings rather than trusting a bearer secret.
+
+Over 8 consecutive nights the `5 20 * * *` (04:05 SGT) cron actually fired
+between 22:03 and 23:00 UTC — 118 to 176 minutes late — because GitHub
+delays scheduled workflows under load and slots near the top of the hour are
+the most contended. The cron minute was moved to `23 20 * * *` (04:23 SGT)
+on 2026-09-16 as an experiment to see whether an uncongested minute helps;
+if delays persist, the escalation is Fly's Cron Manager blueprint.
 
 ### Secrets to set
 
